@@ -77,6 +77,20 @@ def test_live_buy_calls_client_when_risk_allows(isolated_trades_log):
     assert precio == 100.0
 
 
+def test_live_buy_skipped_when_exposicion_total_ya_llena(isolated_trades_log):
+    client = FakeClient()
+    rm = _risk_manager(max_exposicion_total_pct=80)  # 80% de 100_000 = 80_000 de tope
+    executor = OrderExecutor(client, rm, dry_run=False)
+    signal = TradeSignal("GGAL", Signal.BUY, precio=100.0, motivo="test")
+
+    executor.handle_signal(
+        signal, portfolio_value=100_000, posicion_actual={"cantidad": 0, "valorizado": 0}, exposicion_total_actual=80_000
+    )
+
+    assert client.buy_calls == []
+    assert not isolated_trades_log.exists()
+
+
 def test_live_buy_skipped_when_risk_denies(isolated_trades_log):
     client = FakeClient()
     # 0.05% de portfolio_value=100_000 = $50, monto insuficiente para comprar 1 unidad a 100

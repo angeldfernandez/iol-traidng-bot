@@ -33,20 +33,22 @@ class OrderExecutor:
     def _validez(self):
         return (datetime.now() + timedelta(days=self.validez_dias)).strftime("%Y-%m-%d")
 
-    def handle_signal(self, trade_signal, portfolio_value, posicion_actual):
-        """posicion_actual: dict con 'cantidad' y 'valorizado' (valor de mercado actual) del símbolo."""
+    def handle_signal(self, trade_signal, portfolio_value, posicion_actual, exposicion_total_actual=0.0):
+        """posicion_actual: dict con 'cantidad' y 'valorizado' (valor de mercado actual) del símbolo.
+        exposicion_total_actual: suma de 'valorizado' de TODAS las posiciones actuales (para el
+        tope de exposición total de cartera, distinto del tope por símbolo)."""
         if trade_signal.signal == Signal.HOLD:
             return None
 
         if trade_signal.signal == Signal.BUY:
-            return self._handle_buy(trade_signal, portfolio_value, posicion_actual)
+            return self._handle_buy(trade_signal, portfolio_value, posicion_actual, exposicion_total_actual)
 
         return self._handle_sell(trade_signal, posicion_actual)
 
-    def _handle_buy(self, trade_signal, portfolio_value, posicion_actual):
+    def _handle_buy(self, trade_signal, portfolio_value, posicion_actual, exposicion_total_actual):
         exposicion_actual = posicion_actual.get("valorizado", 0.0)
         cantidad, motivo = self.risk_manager.size_buy_order(
-            trade_signal.precio, portfolio_value, exposicion_actual
+            trade_signal.precio, portfolio_value, exposicion_actual, exposicion_total_actual
         )
         if cantidad <= 0:
             logger.info("BUY %s omitida: %s", trade_signal.simbolo, motivo)

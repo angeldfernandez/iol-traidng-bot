@@ -5,7 +5,7 @@ import pytest
 
 import iol_bot.main as main_module
 import iol_bot.signals_log as signals_log_module
-from iol_bot.main import build_posiciones_por_simbolo, run_cycle
+from iol_bot.main import _intentar_rotacion, build_posiciones_por_simbolo, run_cycle
 from iol_bot.strategy import Signal, TradeSignal
 
 
@@ -43,6 +43,8 @@ class FakeStrategy:
 class FakeLimits:
     take_profit_pct = 8
     stop_loss_pct = 5
+    rotacion_habilitada = False
+    min_mejora_score_rotacion = 15
 
 
 class FakeRiskManager:
@@ -55,18 +57,62 @@ class FakeRiskManager:
 
 
 class FakeExecutor:
-    def __init__(self):
+    def __init__(self, resultado_venta=None):
         self.handled = []
+        self._resultado_venta = resultado_venta
 
-    def handle_signal(self, trade_signal, portfolio_value, posicion_actual):
-        self.handled.append((trade_signal, portfolio_value, posicion_actual))
-        return None
+    def handle_signal(self, trade_signal, portfolio_value, posicion_actual, exposicion_total_actual=0.0):
+        self.handled.append((trade_signal, portfolio_value, posicion_actual, exposicion_total_actual))
+        return self._resultado_venta
 
 
 def test_build_posiciones_por_simbolo():
     portafolio = {"activos": [{"titulo": {"simbolo": "GGAL"}, "cantidad": 5, "valorizado": 500, "ppc": 90.0}]}
     posiciones = build_posiciones_por_simbolo(portafolio)
     assert posiciones == {"GGAL": {"cantidad": 5, "valorizado": 500, "ppc": 90.0}}
+
+
+def test_intentar_rotacion_sells_weakest_qualifying_position_and_updates_state():
+    class RiskManagerStub:
+        limits = FakeLimits()
+
+    posiciones = {
+        "DEBIL": {"cantidad": 10, "valorizado": 1000.0, "ppc": 100.0},
+        "OTRA": {"cantidad": 5, "valorizado": 5000.0, "ppc": 900.0},
+    }
+    scores = {"CANDIDATO": 90.0, "DEBIL": 20.0, "OTRA": 85.0}  # OTRA no califica (diferencia de score < 15)
+    executor = FakeExecutor(resultado_venta={"ok": True})
+
+    nueva_exposicion = _intentar_rotacion(
+        executor, RiskManagerStub(), "CANDIDATO", posiciones, portfolio_value=100_000,
+        exposicion_total_actual=6000.0, scores_por_simbolo=scores,
+    )
+
+    assert "DEBIL" not in posiciones  # se removió de la cartera local (se vendió)
+    assert "OTRA" in posiciones  # no calificaba, no se toca
+    assert nueva_exposicion == 6000.0 - 1000.0  # se descontó el valorizado de DEBIL
+
+    venta_signal = executor.handled[0][0]
+    assert venta_signal.simbolo == "DEBIL"
+    assert venta_signal.signal == Signal.SELL
+
+
+def test_intentar_rotacion_does_nothing_when_no_candidate_qualifies():
+    class RiskManagerStub:
+        limits = FakeLimits()
+
+    posiciones = {"A": {"cantidad": 10, "valorizado": 1000.0, "ppc": 100.0}}
+    scores = {"CANDIDATO": 40.0, "A": 35.0}  # diferencia de score insuficiente (< 15)
+    executor = FakeExecutor()
+
+    nueva_exposicion = _intentar_rotacion(
+        executor, RiskManagerStub(), "CANDIDATO", posiciones, portfolio_value=100_000,
+        exposicion_total_actual=1000.0, scores_por_simbolo=scores,
+    )
+
+    assert nueva_exposicion == 1000.0  # sin cambios
+    assert executor.handled == []
+    assert "A" in posiciones
 
 
 def test_run_cycle_updates_risk_manager_and_dispatches_signals(isolated_signals_log, monkeypatch):
@@ -91,10 +137,11 @@ def test_run_cycle_updates_risk_manager_and_dispatches_signals(isolated_signals_
 
     assert risk_manager.updated_with == 100_000
     assert len(executor.handled) == 1
-    trade_signal, portfolio_value, posicion_actual = executor.handled[0]
+    trade_signal, portfolio_value, posicion_actual, exposicion_total_actual = executor.handled[0]
     assert trade_signal.simbolo == "GGAL"
     assert portfolio_value == 100_000
     assert posicion_actual == {"cantidad": 10, "valorizado": 1000, "ppc": 99.0}
+    assert exposicion_total_actual == 1000
 
     with open(isolated_signals_log, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
@@ -120,7 +167,7 @@ def test_run_cycle_does_not_rebuy_symbol_already_held(isolated_signals_log, monk
 
     run_cycle(client, strategy, executor, risk_manager, watchlist)
 
-    trade_signal, _, _ = executor.handled[0]
+    trade_signal, _, _, _ = executor.handled[0]
     # ppc=90, precio=100 -> +11.1%, por encima del take_profit_pct=8 de FakeLimits: fuerza SELL.
     assert trade_signal.signal == Signal.SELL
     assert "take-profit" in trade_signal.motivo
@@ -145,6 +192,6 @@ def test_run_cycle_downgrades_buy_to_hold_when_holding_without_hitting_tp_sl(iso
 
     run_cycle(client, strategy, executor, risk_manager, watchlist)
 
-    trade_signal, _, _ = executor.handled[0]
+    trade_signal, _, _, _ = executor.handled[0]
     assert trade_signal.signal == Signal.HOLD
     assert "ya en posición" in trade_signal.motivo

@@ -1,5 +1,6 @@
 import json
 
+import requests
 import responses
 
 from iol_bot.auth import IOLAuth
@@ -108,3 +109,20 @@ def test_error_response_raises_iolapierror():
         assert False, "debería haber lanzado IOLApiError"
     except IOLApiError:
         pass
+
+
+@responses.activate
+def test_network_error_is_wrapped_as_iolapierror():
+    # DNS caído, timeout, conexión rechazada, etc. — no es una respuesta HTTP con status >=400,
+    # pero el resto del código solo sabe manejar IOLApiError. Ver iol_bot/client.py::_request.
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/estadocuenta",
+        body=requests.exceptions.ConnectionError("getaddrinfo failed"),
+    )
+    client = _authed_client()
+    try:
+        client.estado_cuenta()
+        assert False, "debería haber lanzado IOLApiError"
+    except IOLApiError as exc:
+        assert "error de red" in str(exc)

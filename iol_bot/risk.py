@@ -6,17 +6,33 @@ from datetime import datetime
 logger = logging.getLogger("iol_bot.risk")
 
 
-def calc_buy_quantity(precio, monto_max_orden_pct, portfolio_value, exposicion_actual_simbolo, max_exposicion_pct):
+def calc_buy_quantity(
+    precio,
+    monto_max_orden_pct,
+    portfolio_value,
+    exposicion_actual_simbolo,
+    max_exposicion_pct,
+    exposicion_total_actual=0.0,
+    max_exposicion_total_pct=100.0,
+):
     """Cantidad de unidades a comprar respetando el monto máx. por orden (como % de la cartera,
     NO un monto fijo en ARS — así no deja afuera instrumentos caros a medida que suben de precio o
-    la cartera crece) y el tope de exposición por símbolo. Devuelve 0 si no hay margen disponible."""
+    la cartera crece), el tope de exposición por símbolo, Y el tope de exposición TOTAL de la
+    cartera (suma de todas las posiciones) — sin este último, una racha de señales BUY el mismo
+    ciclo puede desplegar casi el 100% del capital de una sola vez, sin colchón de cash ni margen
+    para diversificar entre más candidatos. Devuelve 0 si no hay margen disponible en ninguno."""
     if precio <= 0 or portfolio_value <= 0:
         return 0
 
     monto_max_orden = portfolio_value * (monto_max_orden_pct / 100)
+
     exposicion_max_valor = portfolio_value * (max_exposicion_pct / 100)
-    margen_disponible = exposicion_max_valor - exposicion_actual_simbolo
-    monto_a_usar = min(monto_max_orden, max(margen_disponible, 0))
+    margen_disponible_simbolo = exposicion_max_valor - exposicion_actual_simbolo
+
+    exposicion_total_max_valor = portfolio_value * (max_exposicion_total_pct / 100)
+    margen_disponible_total = exposicion_total_max_valor - exposicion_total_actual
+
+    monto_a_usar = min(monto_max_orden, max(margen_disponible_simbolo, 0), max(margen_disponible_total, 0))
 
     return math.floor(monto_a_usar / precio)
 
@@ -73,6 +89,47 @@ def apply_position_override(trade_signal, cantidad_en_cartera, costo_promedio, l
     return trade_signal
 
 
+def find_rotation_candidate(posiciones_abiertas, candidato_simbolo, precios_actuales, scores_por_simbolo, min_mejora_score):
+    """Busca, entre las posiciones ya abiertas (sin contar `candidato_simbolo`), la más débil para
+    vender y liberarle lugar a un candidato de compra mejor rankeado que quedó sin margen. Devuelve
+    el símbolo a vender, o None si ninguna posición califica.
+
+    Condiciones para que una posición sea candidata a vender:
+    - Tiene un score_total en `scores_por_simbolo` (si salió del pool de candidatos del día, no se
+      toca — más seguro no rotar una posición de la que no tenemos información fresca).
+    - El candidato de compra la supera en score por al menos `min_mejora_score` puntos (evita rotar
+      por diferencias chicas, que generarían vaivén/costos sin beneficio real).
+    - Vender NO implica pérdida: precio actual >= costo/precio promedio de compra. Nunca se rota
+      vendiendo con pérdida solo para "mejorar" el ranking de la cartera.
+
+    Entre las que califican, se elige la de MENOR score (la más débil primero)."""
+    candidato_score = scores_por_simbolo.get(candidato_simbolo)
+    if candidato_score is None:
+        return None
+
+    mejor_a_vender = None
+    peor_score_visto = None
+
+    for simbolo, posicion in posiciones_abiertas.items():
+        if simbolo == candidato_simbolo or posicion.get("cantidad", 0) <= 0:
+            continue
+
+        score_posicion = scores_por_simbolo.get(simbolo)
+        if score_posicion is None or (candidato_score - score_posicion) < min_mejora_score:
+            continue
+
+        precio_actual = precios_actuales.get(simbolo)
+        costo_promedio = posicion.get("costo_promedio", posicion.get("ppc"))
+        if not precio_actual or not costo_promedio or precio_actual < costo_promedio:
+            continue
+
+        if peor_score_visto is None or score_posicion < peor_score_visto:
+            peor_score_visto = score_posicion
+            mejor_a_vender = simbolo
+
+    return mejor_a_vender
+
+
 class RiskManager:
     """Guarda el estado de riesgo entre ciclos del loop: compara el valor actual de la cartera
     (`estado_cuenta().totalEnPesos`) contra el valor al comienzo del día para saber si ya se
@@ -118,7 +175,7 @@ class RiskManager:
     def is_halted(self):
         return self._halted
 
-    def size_buy_order(self, precio, portfolio_value, exposicion_actual_simbolo):
+    def size_buy_order(self, precio, portfolio_value, exposicion_actual_simbolo, exposicion_total_actual=0.0):
         if self._halted:
             return 0, "trading detenido por circuit breaker de pérdida diaria"
 
@@ -128,9 +185,11 @@ class RiskManager:
             portfolio_value,
             exposicion_actual_simbolo,
             self.limits.max_exposicion_por_simbolo_pct,
+            exposicion_total_actual,
+            self.limits.max_exposicion_total_pct,
         )
         if cantidad <= 0:
-            return 0, "sin margen disponible (límite de monto o exposición por símbolo)"
+            return 0, "sin margen disponible (límite de monto, exposición por símbolo o exposición total)"
         return cantidad, "ok"
 
     def approve_sell(self):

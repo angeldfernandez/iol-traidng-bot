@@ -22,7 +22,15 @@ class IOLClient:
         headers = kwargs.pop("headers", {})
         headers.update(self.auth.auth_header())
 
-        response = self.session.request(method, url, headers=headers, timeout=20, **kwargs)
+        try:
+            response = self.session.request(method, url, headers=headers, timeout=20, **kwargs)
+        except requests.exceptions.RequestException as exc:
+            # DNS caído, timeout, conexión rechazada, etc. — no es un error HTTP, pero el resto
+            # del código (main.py, paper_trade.py, ranking.py, market_scanner.py...) ya sabe
+            # manejar IOLApiError en cada ciclo/símbolo. Envolverlo acá, en un solo lugar, evita
+            # que un blip de red transitorio tumbe el proceso entero (pasó en producción: un
+            # fallo de DNS de unos segundos mató la corrida de paper trading por 6 horas).
+            raise IOLApiError(f"{method} {path} -> error de red: {exc}") from exc
 
         if response.status_code == 401 and retry_on_401:
             logger.info("401 recibido, forzando refresh de token y reintentando una vez")

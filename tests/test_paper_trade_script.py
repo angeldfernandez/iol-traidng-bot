@@ -1,6 +1,22 @@
+import pandas as pd
+import pytest
+
+import iol_bot.main as main_module
+import scripts.paper_trade as paper_trade_module
 from iol_bot.client import IOLApiError
+from iol_bot.config import RiskLimits
 from iol_bot.paper_portfolio import PaperPortfolio
-from scripts.paper_trade import _mark_to_market_final
+from iol_bot.risk import RiskManager
+from iol_bot.strategy import Signal, TradeSignal
+from scripts.paper_trade import _mark_to_market_final, run_cycle
+
+
+@pytest.fixture(autouse=True)
+def isolated_paper_logs(tmp_path, monkeypatch):
+    # run_cycle loggea a PAPER_TRADES_LOG/PAPER_SIGNALS_LOG (constantes de módulo, no parametrizadas
+    # por la cartera) — sin esto, correr estos tests escribe basura en los logs REALES del usuario.
+    monkeypatch.setattr(paper_trade_module, "PAPER_TRADES_LOG", tmp_path / "paper_trades.csv")
+    monkeypatch.setattr(paper_trade_module, "PAPER_SIGNALS_LOG", tmp_path / "paper_signals.csv")
 
 
 class FakeClient:
@@ -48,3 +64,79 @@ def test_mark_to_market_final_no_positions_returns_empty_dict(tmp_path):
     client = FakeClient()
     assert _mark_to_market_final(client, portfolio) == {}
     assert client.calls == []
+
+
+class FakeStrategyBuy:
+    def evaluate(self, simbolo, price_df):
+        return TradeSignal(simbolo, Signal.BUY, precio=float(price_df["cierre"].iloc[-1]), motivo="test")
+
+
+class FakeClientCotizacion:
+    def cotizacion(self, simbolo, **kwargs):
+        return {"ultimoPrecio": 100.0}
+
+
+def test_run_cycle_rotates_weaker_position_to_fund_better_ranked_candidate(tmp_path, monkeypatch):
+    # CANDIDATO (fuera de cartera) está mucho mejor rankeado que DEBIL (ya en cartera).
+    ranking_hoy = pd.DataFrame({"simbolo": ["CANDIDATO", "DEBIL"], "score_total": [90.0, 20.0], "eligible": [True, True]})
+    monkeypatch.setattr(main_module, "get_current_ranking", lambda: ranking_hoy)
+    monkeypatch.setattr(
+        paper_trade_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100.0]}),
+    )
+
+    portfolio = PaperPortfolio(tmp_path / "paper.json", initial_cash=100_000)
+    portfolio.buy("DEBIL", 900, 100.0)  # 90_000 invertidos, cash=10_000
+
+    limits = RiskLimits(
+        max_monto_por_orden_pct=100,
+        max_exposicion_por_simbolo_pct=100,
+        max_perdida_diaria_pct=100,
+        take_profit_pct=100,
+        stop_loss_pct=100,
+        max_exposicion_total_pct=90,  # exactamente lo ya invertido -> CANDIDATO no entra sin rotar
+        rotacion_habilitada=True,
+        min_mejora_score_rotacion=15,
+    )
+    risk_manager = RiskManager(limits)
+    watchlist = [{"simbolo": "CANDIDATO", "mercado": "bCBA", "ultimo_precio": 100.0}]
+
+    run_cycle(FakeClientCotizacion(), FakeStrategyBuy(), risk_manager, portfolio, watchlist)
+
+    assert "DEBIL" not in portfolio.positions  # se vendió (sin pérdida) para liberar lugar
+    assert "CANDIDATO" in portfolio.positions  # y el candidato mejor rankeado se pudo comprar
+    assert portfolio.positions["CANDIDATO"]["cantidad"] == 900
+
+
+def test_run_cycle_does_not_rotate_when_disabled(tmp_path, monkeypatch):
+    # Mismo escenario que el test anterior, pero con rotacion_habilitada=False (default): CANDIDATO
+    # se queda sin comprar, DEBIL no se toca.
+    ranking_hoy = pd.DataFrame({"simbolo": ["CANDIDATO", "DEBIL"], "score_total": [90.0, 20.0], "eligible": [True, True]})
+    monkeypatch.setattr(main_module, "get_current_ranking", lambda: ranking_hoy)
+    monkeypatch.setattr(
+        paper_trade_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100.0]}),
+    )
+
+    portfolio = PaperPortfolio(tmp_path / "paper.json", initial_cash=100_000)
+    portfolio.buy("DEBIL", 900, 100.0)
+
+    limits = RiskLimits(
+        max_monto_por_orden_pct=100,
+        max_exposicion_por_simbolo_pct=100,
+        max_perdida_diaria_pct=100,
+        take_profit_pct=100,
+        stop_loss_pct=100,
+        max_exposicion_total_pct=90,
+        rotacion_habilitada=False,
+        min_mejora_score_rotacion=15,
+    )
+    risk_manager = RiskManager(limits)
+    watchlist = [{"simbolo": "CANDIDATO", "mercado": "bCBA", "ultimo_precio": 100.0}]
+
+    run_cycle(FakeClientCotizacion(), FakeStrategyBuy(), risk_manager, portfolio, watchlist)
+
+    assert "DEBIL" in portfolio.positions
+    assert "CANDIDATO" not in portfolio.positions

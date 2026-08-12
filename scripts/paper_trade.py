@@ -19,11 +19,11 @@ from iol_bot.auth import IOLAuth
 from iol_bot.client import IOLApiError, IOLClient
 from iol_bot.config import LOGS_DIR, Config
 from iol_bot.logging_config import setup_logging
-from iol_bot.main import is_market_open
+from iol_bot.main import _scores_del_ranking_actual, is_market_open
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.paper_portfolio import PaperPortfolio
-from iol_bot.ranking import build_daily_ranking
-from iol_bot.risk import RiskManager, apply_position_override
+from iol_bot.ranking import build_daily_ranking, get_current_ranking
+from iol_bot.risk import RiskManager, apply_position_override, find_rotation_candidate
 from iol_bot.strategy import Signal, SmaCrossoverRsiStrategy
 
 logger = logging.getLogger("iol_bot.paper_trade")
@@ -69,6 +69,34 @@ def _log_paper_signal(trade_signal, estado):
     )
 
 
+def _intentar_rotacion(risk_manager, portfolio, simbolo_candidato, precios_actuales, scores_por_simbolo):
+    """Análogo a iol_bot.main._intentar_rotacion, pero para la cartera virtual (PaperPortfolio).
+    Devuelve True si vendió algo (el llamador debe recalcular portfolio_value/exposición antes de
+    reintentar el size_buy_order del candidato)."""
+    simbolo_a_vender = find_rotation_candidate(
+        portfolio.positions, simbolo_candidato, precios_actuales, scores_por_simbolo, risk_manager.limits.min_mejora_score_rotacion
+    )
+    if not simbolo_a_vender:
+        return False
+
+    precio_venta = precios_actuales.get(simbolo_a_vender)
+    cantidad_venta = portfolio.positions[simbolo_a_vender]["cantidad"]
+    if not precio_venta or cantidad_venta <= 0:
+        return False
+
+    ok, pnl = portfolio.sell(simbolo_a_vender, cantidad_venta, precio_venta)
+    if ok:
+        _log_paper_trade(
+            simbolo_a_vender, "VENTA", cantidad_venta, precio_venta,
+            f"rotación: liberar lugar para {simbolo_candidato} (score mejor)", f"pnl_realizado={pnl:.2f}",
+        )
+        logger.info(
+            "[PAPER] VENTA (rotación) %s x%s @ %.2f para liberar lugar a %s",
+            simbolo_a_vender, cantidad_venta, precio_venta, simbolo_candidato,
+        )
+    return ok
+
+
 def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
     precios_actuales = {}
     simbolos_watchlist = {item["simbolo"] for item in watchlist}
@@ -85,6 +113,9 @@ def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
 
     portfolio_value = portfolio.valorizado_total(precios_actuales)
     risk_manager.update_portfolio_value(portfolio_value)
+
+    # Rotación de posiciones (ver iol_bot/config.py — apagada por defecto).
+    scores_por_simbolo = _scores_del_ranking_actual() if risk_manager.limits.rotacion_habilitada else {}
 
     for i, item in enumerate(watchlist):
         simbolo, mercado = item["simbolo"], item["mercado"]
@@ -103,10 +134,22 @@ def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
                 trade_signal, posicion["cantidad"], posicion.get("costo_promedio"), risk_manager.limits
             )
             exposicion_actual = portfolio.exposicion(simbolo, precio_actual)
+            exposicion_total_actual = portfolio_value - portfolio.cash
 
             estado = "hold"
             if trade_signal.signal == Signal.BUY:
-                cantidad, motivo = risk_manager.size_buy_order(precio_actual, portfolio_value, exposicion_actual)
+                cantidad, motivo = risk_manager.size_buy_order(
+                    precio_actual, portfolio_value, exposicion_actual, exposicion_total_actual
+                )
+
+                if cantidad <= 0 and scores_por_simbolo:
+                    if _intentar_rotacion(risk_manager, portfolio, simbolo, precios_actuales, scores_por_simbolo):
+                        portfolio_value = portfolio.valorizado_total(precios_actuales)
+                        exposicion_total_actual = portfolio_value - portfolio.cash
+                        cantidad, motivo = risk_manager.size_buy_order(
+                            precio_actual, portfolio_value, exposicion_actual, exposicion_total_actual
+                        )
+
                 if cantidad > 0 and portfolio.buy(simbolo, cantidad, precio_actual):
                     estado = "ejecutada"
                     _log_paper_trade(simbolo, "COMPRA", cantidad, precio_actual, trade_signal.motivo, "ok")
@@ -183,13 +226,18 @@ def main():
             risk_manager.reset_daily()
             current_day = date.today()
 
-        watchlist = build_daily_ranking(client, config)
-        status = run_cycle(client, strategy, risk_manager, portfolio, watchlist)
-        logger.info(
-            "Ciclo completo | cash=$%.2f valorizado=$%.2f pnl=$%.2f (%.2f%%) posiciones=%s",
-            portfolio.cash, status["valorizado_total"], status["pnl_total"], status["pnl_total_pct"],
-            list(portfolio.positions.keys()),
-        )
+        try:
+            watchlist = build_daily_ranking(client, config)
+            status = run_cycle(client, strategy, risk_manager, portfolio, watchlist)
+            logger.info(
+                "Ciclo completo | cash=$%.2f valorizado=$%.2f pnl=$%.2f (%.2f%%) posiciones=%s",
+                portfolio.cash, status["valorizado_total"], status["pnl_total"], status["pnl_total_pct"],
+                list(portfolio.positions.keys()),
+            )
+        except IOLApiError as exc:
+            logger.error("Error de API en este ciclo, se lo salta y se reintenta en el próximo: %s", exc)
+        except Exception:
+            logger.exception("Error inesperado en este ciclo, se lo salta y se reintenta en el próximo")
 
         time.sleep(config.loop_interval_minutes * 60)
 

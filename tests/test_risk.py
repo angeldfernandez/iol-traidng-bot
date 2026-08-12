@@ -5,6 +5,7 @@ from iol_bot.risk import (
     calc_buy_quantity,
     check_daily_circuit_breaker,
     check_position_exit,
+    find_rotation_candidate,
 )
 from iol_bot.strategy import Signal, TradeSignal
 
@@ -39,6 +40,130 @@ def test_calc_buy_quantity_zero_when_no_margin_left():
         max_exposicion_pct=10,
     )
     assert cantidad == 0
+
+
+def test_calc_buy_quantity_respects_exposicion_total_max():
+    # tope por orden y por símbolo bien anchos (no atan). Tope TOTAL: 80% de 100_000 = 80_000,
+    # ya hay 79_000 invertidos en el conjunto de la cartera -> solo quedan 1_000 disponibles.
+    cantidad = calc_buy_quantity(
+        precio=100,
+        monto_max_orden_pct=100,
+        portfolio_value=100_000,
+        exposicion_actual_simbolo=0,
+        max_exposicion_pct=100,
+        exposicion_total_actual=79_000,
+        max_exposicion_total_pct=80,
+    )
+    assert cantidad == 10  # 1000 / 100
+
+
+def test_calc_buy_quantity_zero_when_exposicion_total_ya_llena():
+    cantidad = calc_buy_quantity(
+        precio=100,
+        monto_max_orden_pct=100,
+        portfolio_value=100_000,
+        exposicion_actual_simbolo=0,
+        max_exposicion_pct=100,
+        exposicion_total_actual=80_000,
+        max_exposicion_total_pct=80,
+    )
+    assert cantidad == 0
+
+
+def test_calc_buy_quantity_default_exposicion_total_is_unrestricted():
+    # sin pasar exposicion_total_actual/max_exposicion_total_pct, el comportamiento es el de antes
+    # de agregar el tope total (compatibilidad hacia atrás).
+    cantidad = calc_buy_quantity(
+        precio=100, monto_max_orden_pct=1, portfolio_value=100_000, exposicion_actual_simbolo=0, max_exposicion_pct=50
+    )
+    assert cantidad == 10
+
+
+def test_find_rotation_candidate_picks_weakest_qualifying_position():
+    posiciones = {
+        "A": {"cantidad": 10, "costo_promedio": 100.0},  # score 40, gana
+        "B": {"cantidad": 5, "costo_promedio": 100.0},  # score 30 (la más débil que igual califica), gana
+    }
+    precios = {"A": 110.0, "B": 105.0}
+    scores = {"CANDIDATO": 90.0, "A": 40.0, "B": 30.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado == "B"  # entre A y B, ambas califican por diferencia de score -> se vende la de menor score
+
+
+def test_find_rotation_candidate_none_when_no_position_meets_threshold():
+    posiciones = {"A": {"cantidad": 10, "costo_promedio": 100.0}}
+    precios = {"A": 110.0}
+    scores = {"CANDIDATO": 50.0, "A": 40.0}  # diferencia de solo 10 puntos, por debajo del umbral
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado is None
+
+
+def test_find_rotation_candidate_never_sells_at_a_loss():
+    posiciones = {"A": {"cantidad": 10, "costo_promedio": 100.0}}
+    precios = {"A": 95.0}  # por debajo del costo promedio -> vender sería con pérdida
+    scores = {"CANDIDATO": 90.0, "A": 20.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado is None
+
+
+def test_find_rotation_candidate_breakeven_price_is_allowed():
+    posiciones = {"A": {"cantidad": 10, "costo_promedio": 100.0}}
+    precios = {"A": 100.0}  # exactamente en el costo promedio, ni ganancia ni pérdida
+    scores = {"CANDIDATO": 90.0, "A": 20.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado == "A"
+
+
+def test_find_rotation_candidate_skips_positions_without_score():
+    posiciones = {"A": {"cantidad": 10, "costo_promedio": 100.0}}  # no está en `scores`
+    precios = {"A": 110.0}
+    scores = {"CANDIDATO": 90.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado is None
+
+
+def test_find_rotation_candidate_none_when_candidate_has_no_score():
+    posiciones = {"A": {"cantidad": 10, "costo_promedio": 100.0}}
+    precios = {"A": 110.0}
+    scores = {"A": 20.0}  # CANDIDATO no tiene score
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado is None
+
+
+def test_find_rotation_candidate_ignores_zero_quantity_and_itself():
+    posiciones = {
+        "VACIA": {"cantidad": 0, "costo_promedio": 100.0},
+        "CANDIDATO": {"cantidad": 10, "costo_promedio": 50.0},  # no debe considerarse a sí mismo
+    }
+    precios = {"VACIA": 110.0, "CANDIDATO": 110.0}
+    scores = {"CANDIDATO": 90.0, "VACIA": 20.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado is None
+
+
+def test_find_rotation_candidate_works_with_ppc_key_como_en_la_cuenta_real():
+    # main.py usa "ppc" (precio de compra promedio) en vez de "costo_promedio" (paper_trade.py)
+    posiciones = {"A": {"cantidad": 10, "ppc": 100.0}}
+    precios = {"A": 110.0}
+    scores = {"CANDIDATO": 90.0, "A": 20.0}
+
+    resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
+
+    assert resultado == "A"
 
 
 def test_check_daily_circuit_breaker_triggers_above_threshold():
@@ -118,6 +243,23 @@ def test_apply_position_override_lets_hold_through_when_no_trigger():
     signal = TradeSignal("GGAL", Signal.HOLD, precio=101.0, motivo="sin señal")
     resultado = apply_position_override(signal, cantidad_en_cartera=10, costo_promedio=100.0, limits=_limits())
     assert resultado is signal
+
+
+def test_risk_manager_size_buy_order_respects_exposicion_total():
+    rm = RiskManager(_limits(max_exposicion_total_pct=80, max_exposicion_por_simbolo_pct=100, max_monto_por_orden_pct=100))
+
+    # 80% de 100_000 = 80_000 de tope total, ya hay 79_000 invertidos -> solo 1_000 disponibles
+    cantidad, motivo = rm.size_buy_order(
+        precio=100, portfolio_value=100_000, exposicion_actual_simbolo=0, exposicion_total_actual=79_000
+    )
+    assert cantidad == 10
+
+    # exposición total ya en el tope -> no se aprueba nada más
+    cantidad, motivo = rm.size_buy_order(
+        precio=100, portfolio_value=100_000, exposicion_actual_simbolo=0, exposicion_total_actual=80_000
+    )
+    assert cantidad == 0
+    assert "exposición total" in motivo
 
 
 def test_risk_manager_halts_trading_after_daily_loss_breach():

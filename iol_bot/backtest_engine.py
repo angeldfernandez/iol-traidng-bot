@@ -102,8 +102,10 @@ def run_backtest(strategy, price_data, fecha_desde, fecha_hasta, capital_inicial
             )
 
             if trade_signal.signal == Signal.BUY:
+                valor_cartera_actual = portfolio.valorizado_total(precios_hoy)
+                exposicion_total_actual = valor_cartera_actual - portfolio.cash
                 cantidad, _motivo = risk_manager.size_buy_order(
-                    precio_actual, portfolio.valorizado_total(precios_hoy), portfolio.exposicion(simbolo, precio_actual)
+                    precio_actual, valor_cartera_actual, portfolio.exposicion(simbolo, precio_actual), exposicion_total_actual
                 )
                 if cantidad > 0:
                     portfolio.buy(fecha, simbolo, cantidad, precio_actual)

@@ -186,11 +186,31 @@ Antes de cualquier orden se aplican estos límites (configurables en `.env`):
   la cartera, así no deja afuera sin querer instrumentos que cotizan caro por unidad.
 - **Exposición máxima por símbolo** como % de la cartera total (`MAX_EXPOSICION_POR_SIMBOLO_PCT`),
   calculada contra `GET /api/estadocuenta` y `GET /api/portafolio`.
+- **Exposición máxima TOTAL de cartera** (`MAX_EXPOSICION_TOTAL_PCT`, default 80%): suma de todas
+  las posiciones abiertas en simultáneo. Agregado el 2026-08-12 tras un incidente real: el primer
+  ciclo de una sesión abrió 5 posiciones (cada una dentro del límite por símbolo) que en conjunto
+  desplegaron 93.7% de la cartera de una sola vez, dejando casi sin cash y rechazando por falta de
+  margen a ~20 señales de compra válidas en símbolos igual de bien rankeados. Con este tope siempre
+  queda un colchón mínimo de cash.
 - **Circuit breaker de pérdida diaria** (`MAX_PERDIDA_DIARIA_PCT`): compara el valor de la cartera
   contra su valor al comienzo del día; si la caída supera el umbral, el bot deja de operar por el
   resto del día (es "sticky": no se reactiva solo aunque la cartera se recupere, hace falta que
   empiece un día nuevo). El estado se persiste en `logs/risk_state.json` para que el dashboard lo
   pueda leer aunque sea un proceso aparte del bot.
+
+### Rotación de posiciones (`ROTACION_HABILITADA`, apagada por defecto)
+
+Cuando una señal de compra válida no consigue margen (por el tope de exposición por símbolo o el
+total), el bot puede vender la posición más débil ya abierta para financiarla — **solo si** esa
+posición no está en pérdida (precio actual ≥ costo promedio) y el candidato nuevo la supera en
+`score_total` del ranking por al menos `MIN_MEJORA_SCORE_ROTACION` puntos (default 15, para evitar
+vaivén por diferencias chicas). Ver `iol_bot.risk.find_rotation_candidate`.
+
+**Por qué está apagada por defecto**: depende del `score_total` del motor de ranking, que recién
+empezó a existir el 2026-08-12 — no hay forma de backtestear esta lógica retroactivamente (el
+motor de backtesting solo tiene precios históricos, no scores históricos). Antes de habilitarla,
+conviene observarla un tiempo en paper trading, o extender el backtesting para simular también el
+ranking día a día (no implementado).
 
 ## Motor de scoring/ranking (`config/scoring.yaml`)
 
@@ -310,8 +330,13 @@ consultar cuenta/cotizaciones u operar a mano charlando con un asistente, no par
 
 ## Qué falta / próximos pasos posibles
 
-- El arranque/reinicio automático del bot (Windows Task Scheduler, servicio, VM) no está incluido —
-  hoy se corre manualmente con `python -m iol_bot.main`.
+- **Resiliencia ante errores de red** (corregido 2026-08-12): un blip transitorio de DNS mató una
+  sesión completa de paper trading por ~6 horas (un solo ciclo sin manejar el error tumbó el
+  proceso entero). Ahora `IOLClient._request` envuelve cualquier error de red como `IOLApiError`
+  (no solo errores HTTP), y el loop principal de `main.py`/`scripts/paper_trade.py` atrapa
+  cualquier excepción por ciclo y sigue con el próximo en vez de morir. Sigue faltando el
+  arranque/reinicio automático del PROCESO en sí (Windows Task Scheduler, servicio, VM) si la
+  máquina se reinicia — hoy se corre manualmente con `python -m iol_bot.main`.
 - La estrategia SMA+RSI en sí (`iol_bot/strategy.py`) no cambió con el motor de scoring/ranking —
   sigue siendo la misma señal técnica simple, ahora aplicada sobre una watchlist mejor seleccionada.
   Ya se puede backtestear con `python -m scripts.run_backtest` (ver sección "Motor de backtesting")
@@ -333,9 +358,11 @@ una vez en un bot que opera con dinero real sin sandbox:
 - **Matriz de correlación** entre candidatos y **límites de exposición por sector** — hoy no hay
   fuente de datos de sector para los símbolos de IOL, habría que resolver eso primero (mapeo manual
   o algún endpoint que lo exponga).
-- **Setups de entrada** (breakout/pullback/momentum/reversal) — hoy la única señal de entrada sigue
-  siendo el cruce SMA+RSI de `strategy.py`, sin usar el `score_total` del ranking para decidir cuándo
-  entrar, solo para decidir el universo a evaluar.
+- **Setups de entrada** (breakout/pullback/momentum/reversal) — la señal de entrada sigue siendo el
+  cruce SMA+RSI de `strategy.py`. El `score_total` del ranking ahora sí se usa para una decisión de
+  trading (rotación de posiciones, ver sección "Gestión de riesgo" — apagada por defecto), pero
+  todavía no para decidir CUÁNDO entrar a un candidato, solo para decidir el universo a evaluar y,
+  si está habilitada, a quién rotar.
 - **Stops por ATR y position sizing por riesgo** — `risk.py` sigue usando take-profit/stop-loss de
   % fijo y monto fijo por orden. `features.py` ya calcula `atr_pct`, pero no está conectado a
   `risk.py` todavía.

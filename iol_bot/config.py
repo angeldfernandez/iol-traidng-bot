@@ -39,6 +39,15 @@ class RiskLimits:
     max_perdida_diaria_pct: float
     take_profit_pct: float
     stop_loss_pct: float
+    # Default 100 (sin restricción) para no romper instancias existentes que no lo especifican
+    # (tests, código viejo) — Config.load() sí pasa un valor real desde .env.
+    max_exposicion_total_pct: float = 100.0
+    # Rotación de posiciones (vender la más débil, sin pérdida, para financiar un candidato mejor
+    # rankeado que quedó sin margen): apagada por defecto. Requiere el score del día del motor de
+    # ranking, que no se puede backtestear retroactivamente (rankings/ recién existe desde que se
+    # implementó) — arrancar con esto en false hasta validarlo en vivo/paper trading un tiempo.
+    rotacion_habilitada: bool = False
+    min_mejora_score_rotacion: float = 15.0
 
 
 @dataclass
@@ -82,6 +91,9 @@ class Config:
             max_perdida_diaria_pct=_env_float("MAX_PERDIDA_DIARIA_PCT", 5),
             take_profit_pct=_env_float("TAKE_PROFIT_PCT", 8),
             stop_loss_pct=_env_float("STOP_LOSS_PCT", 5),
+            max_exposicion_total_pct=_env_float("MAX_EXPOSICION_TOTAL_PCT", 80),
+            rotacion_habilitada=_env_bool("ROTACION_HABILITADA", False),
+            min_mejora_score_rotacion=_env_float("MIN_MEJORA_SCORE_ROTACION", 15),
         )
 
         base_url = os.getenv("IOL_BASE_URL_OVERRIDE", "").strip() or DEFAULT_BASE_URL
