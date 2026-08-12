@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 
 from iol_bot.auth import IOLAuth
 from iol_bot.client import IOLApiError, IOLClient
@@ -114,8 +115,14 @@ except ValueError as exc:
 modo = "🔴 LIVE (dinero real)" if not config.effective_dry_run else "🟢 DRY_RUN (simulado)"
 st.caption(f"Modo actual del bot según .env: **{modo}**  |  Fuente de datos: cuenta real de IOL (solo lectura acá)")
 
-if st.button("🔄 Refrescar datos"):
-    st.cache_data.clear()
+col_refresh, col_auto = st.columns([1, 2])
+with col_refresh:
+    if st.button("🔄 Refrescar datos"):
+        st.cache_data.clear()
+with col_auto:
+    auto_refresh = st.checkbox("⏱️ Auto-refresh cada 60s", value=True)
+if auto_refresh:
+    st_autorefresh(interval=60_000, key="auto_refresh_timer")
 
 tab_resumen, tab_paper, tab_ranking, tab_backtests, tab_actividad, tab_simbolo = st.tabs(
     ["📊 Resumen", "📝 Paper Trading", "🏆 Ranking TOP 50", "📈 Backtests", "📋 Actividad", "🔍 Símbolo"]
