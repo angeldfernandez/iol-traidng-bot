@@ -1,0 +1,66 @@
+# Configuración del motor de scoring/ranking (iol_bot/ranking.py, scoring.py, features.py).
+#
+# Nada de esto está hardcodeado en el código: los pesos y umbrales se pueden ajustar acá sin
+# tocar Python. Los pesos de `weights` deben sumar 1.0 (con tolerancia de redondeo).
+
+# Tamaño del embudo de selección (sección 6/11 del prompt maestro).
+funnel:
+  # Cuántos símbolos entran al pool de candidatos (preselección barata por volumen, vía los
+  # paneles de IOL — no cuesta llamadas de serie histórica). Subir este número sube linealmente
+  # las llamadas de serie histórica del primer ciclo del día para símbolos nuevos en cache.
+  candidate_pool_size: 150
+  # Cuántos símbolos del pool, ya scoreados, quedan como watchlist final para la estrategia.
+  top_n_final: 50
+
+# Filtro de calidad aplicado ANTES de scorear (sección 6). Un candidato que no pasa el filtro NO
+# se descarta en silencio: queda registrado en el ranking del día con eligible=false y el motivo.
+quality_filters:
+  # Mínima cantidad de ruedas con precio en el cache para calcular features con algo de sentido.
+  min_history_days: 30
+  # Volumen nominal (ARS) mínimo del día para considerar el símbolo líquido.
+  min_avg_volume: 500000
+  # Precio mínimo, para filtrar basura de cotización (precio 0 o negativo).
+  min_price: 1
+  # NOTA: no existe un filtro de spread (MAX_SPREAD_PERCENT del prompt maestro) porque ningún
+  # endpoint de IOL que usa este bot (panel_cotizaciones, serie_historica) expone punta
+  # compradora/vendedora — no hay dato de spread disponible para calcularlo. Queda pendiente.
+
+# Símbolo usado como benchmark para fuerza relativa (sección 8). Se cachea igual que cualquier
+# otro símbolo (mismo mecanismo de iol_bot/market_data.py) y se excluye automáticamente del pool
+# de candidatos para que no compita contra sí mismo.
+relative_strength:
+  benchmark_simbolo: SPY
+  benchmark_mercado: bCBA
+
+# Qué features crudos (de iol_bot/features.py) integran cada grupo/subscore (sección 10). Un
+# grupo queda en NaN para un símbolo solo si TODOS sus features miembro son NaN para ese símbolo.
+groups:
+  momentum: [mom_5d, mom_10d, mom_20d, mom_60d]
+  trend: [dist_sma_20, dist_sma_50, dist_sma_100, slope_20d]
+  technical_momentum: [rsi_14, macd_hist]
+  volatility: [atr_pct, vol_20d, vol_60d, max_drawdown_60d]
+  price_range: [dist_to_high, dist_to_low, position_in_range]
+  risk_adjusted: [sharpe_60d, sortino_60d, calmar_60d]
+  relative_strength: [rs_excess_5d, rs_excess_20d, rs_excess_60d, rs_trend_60d]
+  volume: [liquidity_today, avg_volume_20d, avg_volume_60d, relative_volume]
+
+# Pesos por grupo para el score_total (sección 10). Deben sumar 1.0. Adaptación de la tabla de
+# pesos del prompt maestro a los grupos que realmente se pueden calcular hoy (se fusionó
+# "liquidez" dentro de "volume" y se dejó afuera "CEDEAR vs. subyacente", que es una fase futura).
+weights:
+  momentum: 0.20
+  trend: 0.15
+  risk_adjusted: 0.15
+  technical_momentum: 0.10
+  relative_strength: 0.10
+  volume: 0.10
+  volatility: 0.10
+  price_range: 0.10
+
+# Features donde un valor CRUDO más bajo es mejor (se invierte el percentil al normalizar). Todo
+# lo que no está listado acá se asume "más alto es mejor".
+directionality_lower_is_better:
+  - dist_to_high
+  - atr_pct
+  - vol_20d
+  - vol_60d

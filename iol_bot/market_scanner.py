@@ -9,13 +9,11 @@ INSTRUMENTO = "acciones"  # único instrumento soportado hoy: acciones argentina
 MERCADO = "bCBA"  # todo lo que devuelven estos paneles cotiza en bCBA/BYMA
 
 
-def scan_market(client, paneles=None, top_n=50, pais="argentina"):
+def _collect_ranked(client, paneles, pais):
     """Trae cotizaciones de los paneles indicados (una llamada HTTP por panel — barato,
-    a diferencia de pedir serie histórica símbolo por símbolo) y devuelve los `top_n` símbolos de
-    mayor volumen operado en pesos (liquidez), para no gastar cientos de llamadas de serie
-    histórica en instrumentos casi sin operar. Símbolos repetidos entre paneles se deduplican
-    quedándose con el de mayor volumen visto."""
-    paneles = paneles or DEFAULT_PANELES
+    a diferencia de pedir serie histórica símbolo por símbolo) y devuelve TODOS los símbolos
+    vistos, ordenados de mayor a menor volumen operado en pesos. Símbolos repetidos entre paneles
+    se deduplican quedándose con el de mayor volumen visto."""
     vistos = {}
 
     for panel in paneles:
@@ -39,12 +37,20 @@ def scan_market(client, paneles=None, top_n=50, pais="argentina"):
 
         logger.info("Panel '%s': %d símbolos", panel, len(titulos))
 
-    ranked = sorted(vistos.values(), key=lambda item: item["volumen_nominal"], reverse=True)
+    return sorted(vistos.values(), key=lambda item: item["volumen_nominal"], reverse=True)
+
+
+def scan_market(client, paneles=None, top_n=50, pais="argentina"):
+    """Devuelve los `top_n` símbolos de mayor volumen operado en pesos (liquidez), para no gastar
+    cientos de llamadas de serie histórica en instrumentos casi sin operar. Usado por la
+    estrategia en vivo/paper trading, que solo necesitan simbolo/mercado/ultimo_precio."""
+    paneles = paneles or DEFAULT_PANELES
+    ranked = _collect_ranked(client, paneles, pais)
     seleccionados = ranked[:top_n]
 
     logger.info(
         "Scan de mercado: %d símbolos únicos en %d panel(es), analizando los %d de mayor volumen nominal",
-        len(vistos),
+        len(ranked),
         len(paneles),
         len(seleccionados),
     )
@@ -53,5 +59,32 @@ def scan_market(client, paneles=None, top_n=50, pais="argentina"):
 
     return [
         {"simbolo": item["simbolo"], "mercado": MERCADO, "ultimo_precio": item["ultimo_precio"]}
+        for item in seleccionados
+    ]
+
+
+def scan_market_candidates(client, paneles=None, top_n=150, pais="argentina"):
+    """Igual que scan_market, pero conserva volumen_nominal — lo usa el motor de ranking/scoring
+    (iol_bot/ranking.py) para calcular el feature de liquidez del día. scan_market en sí no
+    cambia de forma para no romper a sus consumidores actuales (main.py, paper_trade.py,
+    dashboard.py)."""
+    paneles = paneles or DEFAULT_PANELES
+    ranked = _collect_ranked(client, paneles, pais)
+    seleccionados = ranked[:top_n]
+
+    logger.info(
+        "Scan de candidatos: %d símbolos únicos en %d panel(es), pool de %d para el motor de scoring",
+        len(ranked),
+        len(paneles),
+        len(seleccionados),
+    )
+
+    return [
+        {
+            "simbolo": item["simbolo"],
+            "mercado": MERCADO,
+            "ultimo_precio": item["ultimo_precio"],
+            "volumen_nominal": item["volumen_nominal"],
+        }
         for item in seleccionados
     ]

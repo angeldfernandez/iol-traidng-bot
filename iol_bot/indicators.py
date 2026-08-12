@@ -37,3 +37,15 @@ def bollinger_bands(series, window=20, num_std=2):
     upper = mid + num_std * std
     lower = mid - num_std * std
     return pd.DataFrame({"mid": mid, "upper": upper, "lower": lower})
+
+
+def atr(df, window=14):
+    """Average True Range. `df` necesita columnas maximo, minimo, cierre (mismo formato que
+    devuelve market_data.get_historical_prices). True range de cada rueda = el mayor entre
+    (máximo-mínimo), |máximo-cierre_anterior| y |mínimo-cierre_anterior|."""
+    maximo, minimo, cierre = df["maximo"], df["minimo"], df["cierre"]
+    cierre_prev = cierre.shift(1)
+    true_range = pd.concat(
+        [maximo - minimo, (maximo - cierre_prev).abs(), (minimo - cierre_prev).abs()], axis=1
+    ).max(axis=1)
+    return true_range.rolling(window=window, min_periods=window).mean()

@@ -18,7 +18,9 @@ from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.market_scanner import scan_market
 from iol_bot.pnl import daily_pnl_pesos
 from iol_bot.price_cache import load_cache
+from iol_bot.ranking import build_daily_ranking, diff_rankings, get_current_ranking, get_previous_ranking
 from iol_bot.risk import load_status
+from iol_bot.scoring_config import ScoringConfig
 from iol_bot.signals_log import SIGNALS_LOG
 
 from scripts.paper_trade import PAPER_PORTFOLIO_PATH, PAPER_SIGNALS_LOG, PAPER_TRADES_LOG
@@ -52,6 +54,16 @@ def fetch_price_history(simbolo, mercado, hoy_precio=None):
 def fetch_watchlist():
     client, config = get_client_and_config()
     return scan_market(client, paneles=config.paneles, top_n=config.max_simbolos_a_analizar)
+
+
+@st.cache_data(ttl=120)
+def fetch_ranking():
+    """Recalcula el ranking de hoy (motor de scoring de iol_bot/ranking.py) y devuelve
+    (ranking_hoy, ranking_anterior). Tarda más que fetch_watchlist porque trae/calcula features
+    para todo el pool de candidatos configurado (no solo el TOP final)."""
+    client, config = get_client_and_config()
+    build_daily_ranking(client, config)
+    return get_current_ranking(), get_previous_ranking()
 
 
 def read_csv_log(path, columns):
@@ -248,6 +260,64 @@ if trades_df.empty:
     st.info("Todavía no hay operaciones registradas.")
 else:
     st.dataframe(trades_df.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+
+# --- Ranking TOP 50 (motor de scoring) ---
+st.header("🏆 Ranking TOP 50 — motor de scoring")
+st.caption(
+    "Score 0-100 por símbolo, calculado con config/scoring.yaml a partir de momentum, tendencia, "
+    "momentum técnico, volatilidad, volumen, fuerza relativa vs. benchmark y performance "
+    "ajustada por riesgo. Reemplaza la selección cruda por volumen que usaba antes el bot como "
+    "watchlist. Puede tardar más que el resto del dashboard: calcula features para todo el pool "
+    "de candidatos, no solo el TOP final."
+)
+try:
+    scoring_cfg = ScoringConfig.load()
+except (OSError, ValueError) as exc:
+    scoring_cfg = None
+    st.error(f"No se pudo cargar config/scoring.yaml: {exc}")
+
+if scoring_cfg is not None:
+    try:
+        ranking_hoy, ranking_previo = fetch_ranking()
+    except IOLApiError as exc:
+        ranking_hoy, ranking_previo = None, None
+        st.error(f"Error calculando el ranking: {exc}")
+
+    if ranking_hoy is None or ranking_hoy.empty:
+        st.info("Todavía no hay ranking calculado para hoy.")
+    else:
+        diff = diff_rankings(ranking_hoy, ranking_previo, top_n=scoring_cfg.top_n_final)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Pool elegible hoy", int(ranking_hoy["eligible"].sum()))
+        col2.metric("Entradas al TOP vs. ranking anterior", len(diff["entries"]))
+        col3.metric("Salidas del TOP vs. ranking anterior", len(diff["exits"]))
+        if diff["entries"]:
+            st.caption("Entraron: " + ", ".join(diff["entries"]))
+        if diff["exits"]:
+            st.caption("Salieron: " + ", ".join(diff["exits"]))
+
+        group_score_cols = [f"{grupo}_score" for grupo in scoring_cfg.groups if f"{grupo}_score" in ranking_hoy.columns]
+        columnas_top = ["rank", "simbolo", "ultimo_precio", "score_total"] + group_score_cols
+
+        top_df = ranking_hoy[ranking_hoy["eligible"] & (ranking_hoy["rank"] <= scoring_cfg.top_n_final)]
+        top_df = top_df.sort_values("rank")[columnas_top]
+        st.dataframe(top_df.round(2), use_container_width=True, hide_index=True)
+
+        resto_elegible = ranking_hoy[ranking_hoy["eligible"] & (ranking_hoy["rank"] > scoring_cfg.top_n_final)]
+        if not resto_elegible.empty:
+            with st.expander(f"Ver los {len(resto_elegible)} candidatos elegibles fuera del TOP {scoring_cfg.top_n_final}"):
+                st.dataframe(
+                    resto_elegible.sort_values("rank")[columnas_top].round(2), use_container_width=True, hide_index=True
+                )
+
+        excluidos = ranking_hoy[~ranking_hoy["eligible"]]
+        if not excluidos.empty:
+            with st.expander(f"Ver los {len(excluidos)} candidatos excluidos y el motivo"):
+                st.dataframe(
+                    excluidos[["simbolo", "ultimo_precio", "volumen_nominal", "motivo"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 # --- Gráfico de precio + indicadores ---
 st.header("Precio e indicadores por símbolo")

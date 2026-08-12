@@ -1,6 +1,6 @@
 import pandas as pd
 
-from iol_bot.indicators import bollinger_bands, ema, macd, rsi, sma
+from iol_bot.indicators import atr, bollinger_bands, ema, macd, rsi, sma
 
 
 def test_sma_basic():
@@ -45,3 +45,28 @@ def test_bollinger_bands_upper_above_lower():
     valid = result.dropna()
     assert (valid["upper"] >= valid["mid"]).all()
     assert (valid["mid"] >= valid["lower"]).all()
+
+
+def test_atr_basic_true_range_and_gap():
+    df = pd.DataFrame(
+        {
+            "maximo": [12, 13, 20],
+            "minimo": [8, 9, 15],
+            "cierre": [10, 11, 18],  # fila 2 es un gap up respecto al cierre previo (11 -> 18)
+        }
+    )
+    result = atr(df, window=2)
+
+    # fila 0: sin cierre previo, TR = máximo-mínimo = 4. Con min_periods=2, todavía no hay ATR.
+    assert pd.isna(result.iloc[0])
+    # fila 1: TR = max(13-9, |13-10|, |9-10|) = 4. ATR = mean(TR0=4, TR1=4) = 4.
+    assert result.iloc[1] == 4.0
+    # fila 2: TR = max(20-15, |20-11|, |15-11|) = 9 (domina el gap, no el rango del día).
+    # ATR = mean(TR1=4, TR2=9) = 6.5
+    assert result.iloc[2] == 6.5
+
+
+def test_atr_nan_before_window_fills():
+    df = pd.DataFrame({"maximo": [10, 11, 12, 13], "minimo": [9, 10, 11, 12], "cierre": [9.5, 10.5, 11.5, 12.5]})
+    result = atr(df, window=14)
+    assert result.isna().all()

@@ -2,8 +2,11 @@
 
 Bot de trading automático para [Invertir Online (IOL)](https://www.invertironline.com/), usando su
 [API pública](https://iol.apidocs.ar/). Escanea el mercado (acciones argentinas + CEDEARs, ~950
-símbolos entre los paneles configurados) con indicadores técnicos (cruce de medias móviles + RSI) y
-opera automáticamente vía `POST /api/operar/Comprar` y `POST /api/operar/Vender`.
+símbolos entre los paneles configurados), preselecciona por liquidez y los rankea con un motor de
+scoring cuantitativo (momentum, tendencia, volatilidad, volumen, fuerza relativa, riesgo — ver
+"Motor de scoring/ranking" más abajo), evalúa la watchlist resultante con indicadores técnicos
+(cruce de medias móviles + RSI) y opera automáticamente vía `POST /api/operar/Comprar` y
+`POST /api/operar/Vender`.
 
 ## ⚠️ Advertencia de riesgo — leé esto primero
 
@@ -63,24 +66,43 @@ El loop principal corre solo en horario de mercado de BYMA (11:00–17:00, hora 
 viernes — ajustable en `iol_bot/main.py` si hace falta). En cada ciclo re-escanea el mercado (ver
 sección siguiente) y evalúa el universo resultante.
 
-### Escaneo de mercado en vez de watchlist fija (`iol_bot/market_scanner.py`)
+### De universo a watchlist: scan de liquidez + motor de scoring/ranking
 
-En vez de mantener una lista fija de símbolos, cada ciclo el bot:
+En vez de mantener una lista fija de símbolos, cada ciclo el bot arma la watchlist en dos etapas:
 
-1. Trae cotizaciones de los paneles configurados en `PANELES` (default `merval,burcap,cedears` —
-   ~20 + ~25 + ~920 símbolos), **una sola llamada HTTP por panel** vía
-   `GET /api/Cotizaciones/{Instrumento}/{Panel}/{Pais}`.
-2. Deduplica símbolos que aparecen en más de un panel (quedándose con el de mayor volumen visto).
-3. Rankea por **volumen nominal operado** (`volumen × último precio`, un proxy de liquidez mejor que
-   volumen en unidades, que sesga a favor de acciones baratas) y se queda con los
-   `MAX_SIMBOLOS_A_ANALIZAR` (default 50) de mayor volumen.
-4. Recién a esos ~50 símbolos les baja serie histórica completa y calcula indicadores — bajarle el
-   histórico a los ~950 símbolos del universo completo cada ciclo sería lento y probablemente
-   dispare rate-limiting en la API.
+1. **Preselección barata por liquidez** (`iol_bot/market_scanner.py::scan_market_candidates`): trae
+   cotizaciones de los paneles configurados en `PANELES` (default `merval,burcap,cedears` — ~20 +
+   ~25 + ~920 símbolos), **una sola llamada HTTP por panel** vía
+   `GET /api/Cotizaciones/{Instrumento}/{Panel}/{Pais}`, deduplica símbolos repetidos entre paneles
+   (quedándose con el de mayor volumen visto) y se queda con los `funnel.candidate_pool_size`
+   (`config/scoring.yaml`, default 150) de mayor **volumen nominal operado**
+   (`volumen × último precio` — mejor proxy de liquidez que volumen en unidades, que sesga a favor
+   de acciones baratas). Esto no cuesta llamadas de serie histórica.
+2. **Motor de scoring/ranking** (`iol_bot/ranking.py`, `scoring.py`, `features.py`): a ese pool de
+   candidatos SÍ se les baja serie histórica (con el mismo cache de siempre) y se les calcula un set
+   amplio de features — momentum, tendencia, momentum técnico (RSI/MACD), volatilidad (ATR),
+   volumen, fuerza relativa contra un benchmark (`SPY` por defecto), y performance ajustada por
+   riesgo (Sharpe/Sortino/Calmar). Un filtro de calidad (historia mínima, volumen mínimo, precio
+   mínimo) marca cada candidato como elegible o no **sin descartarlo en silencio**: el motivo queda
+   guardado igual. Cada feature se normaliza por percentil dentro del pool elegible del día y se
+   combina en un `score_total` 0-100 con los pesos de `config/scoring.yaml`. Los
+   `funnel.top_n_final` (default 50) de mayor score son la watchlist final que recibe la estrategia.
 
-Este filtro es una decisión de trade-off: prioriza instrumentos líquidos (spreads más finos, menos
-slippage) por sobre cobertura total. Si un símbolo puntual te interesa y queda afuera del top N,
-subí `MAX_SIMBOLOS_A_ANALIZAR` o restringí `PANELES` a uno donde ese símbolo tenga más peso relativo.
+Bajarle el histórico a los ~950 símbolos del universo completo cada ciclo sería lento y probablemente
+dispare rate-limiting en la API — por eso la preselección por liquidez sigue existiendo como primer
+filtro barato antes de scorear. Todos los pesos, ventanas y umbrales están en `config/scoring.yaml`,
+no hardcodeados en el código.
+
+**Ranking histórico**: cada corrida persiste `rankings/{YYYY-MM-DD}.csv` con TODOS los candidatos
+evaluados ese día (elegibles o no). `iol_bot/ranking.py` expone `get_current_ranking`,
+`get_previous_ranking`, `diff_rankings` (entradas/salidas del TOP y evolución de score/rank) y
+`get_symbol_history` para consultar cómo evolucionó un símbolo en el tiempo. El archivo de HOY se
+reescribe en cada ciclo (es un valor vivo hasta que cierra el mercado, no una foto de fin de día).
+`rankings/` es local y descartable, igual que `cache/` — está en `.gitignore`.
+
+Si un símbolo puntual te interesa y queda afuera del pool de candidatos, subí
+`funnel.candidate_pool_size` en `config/scoring.yaml` o restringí `PANELES` a uno donde ese símbolo
+tenga más peso relativo.
 
 ### Costo de la API y cache local (`iol_bot/price_cache.py`)
 
@@ -103,6 +125,13 @@ mismo día **0/15**. En la práctica baja el consumo de ~1.320 a ~170 llamadas/d
 default (top 50 símbolos, ciclo cada 15 min) — de ~28.000/mes (por encima del cupo gratis) a
 ~3.600/mes. La carpeta `cache/` es local y descartable (está en `.gitignore`) — borrarla solo hace
 que el próximo ciclo vuelva a pedir todo completo, no rompe nada.
+
+**Con el motor de scoring/ranking** el pool que recibe serie histórica es
+`funnel.candidate_pool_size` (default 150 en `config/scoring.yaml`), no los 50 de antes — sigue
+siendo el mismo mecanismo de cache (0 llamadas nuevas por símbolo ya cacheado el mismo día), pero el
+primer ciclo del día para símbolos nuevos sube proporcionalmente (150 vs. 50). Con la config default
+eso son ~150 llamadas una vez por día hábil ≈ 3.300/mes solo por esa parte — sigue muy por debajo del
+cupo gratis, pero si subís mucho `candidate_pool_size` conviene volver a hacer la cuenta.
 
 ### Flujo recomendado antes de operar en real
 
@@ -161,6 +190,33 @@ Antes de cualquier orden se aplican estos límites (configurables en `.env`):
   empiece un día nuevo). El estado se persiste en `logs/risk_state.json` para que el dashboard lo
   pueda leer aunque sea un proceso aparte del bot.
 
+## Motor de scoring/ranking (`config/scoring.yaml`)
+
+Toda la configuración "de investigación cuantitativa" (a diferencia de la operativa, que vive en
+`.env`) está en `config/scoring.yaml`:
+
+- `funnel`: tamaño del pool de candidatos (`candidate_pool_size`) y del TOP final (`top_n_final`).
+- `quality_filters`: historia mínima, volumen nominal mínimo, precio mínimo. **No incluye filtro de
+  spread** (`MAX_SPREAD_PERCENT`) — ningún endpoint de IOL que usa este bot expone punta
+  compradora/vendedora, así que ese dato no existe hoy para calcularlo.
+- `relative_strength`: símbolo/mercado usado como benchmark para fuerza relativa (default `SPY` en
+  `bCBA`) — se excluye automáticamente del pool de candidatos para no competir contra sí mismo.
+- `groups` / `weights`: qué features (`iol_bot/features.py`) integran cada subscore y qué peso tiene
+  cada grupo en el `score_total` (deben sumar 1.0 — `ScoringConfig.load()` valida esto al arrancar y
+  también que no haya grupos en `weights` sin definir en `groups`).
+- `directionality_lower_is_better`: features donde un valor crudo más bajo puntúa mejor (ej.
+  volatilidad, distancia al máximo).
+
+La normalización de cada feature es por **percentil dentro del pool elegible del día** (no contra un
+umbral absoluto) — el score de un símbolo depende de cómo está parado ese día frente a los demás
+candidatos. Con pools chicos (mercado recién abierto, filtros muy restrictivos) el percentil pierde
+resolución; `iol_bot/ranking.py` loggea un warning cuando eso pasa.
+
+**Ventanas de historia**: el cache de precios guarda ~180 días corridos (~120-125 ruedas en el
+mercado argentino). Por eso los features de este motor llegan como máximo a ventanas de 60-120
+ruedas — SMA200, momentum a 252 días y máximo/mínimo de 52 semanas quedan pendientes para cuando se
+amplíe esa ventana de cache (ver "Qué falta" más abajo).
+
 ## Dashboard
 
 ```bash
@@ -176,6 +232,10 @@ logs que `main.py` va generando). Muestra:
 - **Señales generadas**: todas las que calculó la estrategia, se hayan ejecutado o no (`logs/signals.csv`),
   filtrables por símbolo — para entender *por qué* el bot actuó o no actuó.
 - **Operaciones ejecutadas o simuladas** (`logs/trades.csv`).
+- **Ranking TOP 50**: tabla del motor de scoring de hoy (score total + subscores por símbolo),
+  entradas/salidas vs. el ranking anterior, candidatos elegibles fuera del TOP, y candidatos
+  excluidos con el motivo. Tarda más que el resto del dashboard porque recalcula el ranking del
+  pool completo de candidatos, no solo el TOP final.
 - **Gráfico de precio + SMA rápida/lenta + RSI** por símbolo, eligiendo entre el universo actual del
   scan de mercado (top `MAX_SIMBOLOS_A_ANALIZAR` por volumen).
 
@@ -202,11 +262,37 @@ consultar cuenta/cotizaciones u operar a mano charlando con un asistente, no par
 
 - El arranque/reinicio automático del bot (Windows Task Scheduler, servicio, VM) no está incluido —
   hoy se corre manualmente con `python -m iol_bot.main`.
-- La estrategia SMA+RSI es un punto de partida; conviene backtestearla con tus propios datos
-  históricos antes de confiar en ella para operar en real.
+- La estrategia SMA+RSI en sí (`iol_bot/strategy.py`) no cambió con el motor de scoring/ranking —
+  sigue siendo la misma señal técnica simple, ahora aplicada sobre una watchlist mejor seleccionada.
+  Conviene backtestearla con tus propios datos históricos antes de confiar en ella para operar en real.
 - Considerá agregar notificaciones (email/Telegram) cuando el circuit breaker se activa o una orden
   es rechazada, para enterarte sin tener que mirar los logs.
 - Los nombres de panel (`merval`, `burcap`, `cedears`) los encontré probando contra la API real, no
   están en la documentación oficial (el `Panel` del endpoint es un string libre, no un enum
   documentado). Si en el futuro devuelven 404 o la API cambia esos nombres, revisalo con
   `client.panel_cotizaciones(...)` directo antes de asumir que es un bug del bot.
+
+### Pendiente del motor cuantitativo (deliberadamente fuera de esta fase)
+
+El motor de scoring/ranking (`iol_bot/ranking.py`, `scoring.py`, `features.py`) cubre selección y
+ranking de candidatos. Lo que sigue quedó explícitamente afuera de esta fase, para no meter todo de
+una vez en un bot que opera con dinero real sin sandbox:
+
+- **Régimen de mercado** (BULL/NEUTRAL/BEAR/HIGH_VOLATILITY) para modular agresividad.
+- **Matriz de correlación** entre candidatos y **límites de exposición por sector** — hoy no hay
+  fuente de datos de sector para los símbolos de IOL, habría que resolver eso primero (mapeo manual
+  o algún endpoint que lo exponga).
+- **Setups de entrada** (breakout/pullback/momentum/reversal) — hoy la única señal de entrada sigue
+  siendo el cruce SMA+RSI de `strategy.py`, sin usar el `score_total` del ranking para decidir cuándo
+  entrar, solo para decidir el universo a evaluar.
+- **Stops por ATR y position sizing por riesgo** — `risk.py` sigue usando take-profit/stop-loss de
+  % fijo y monto fijo por orden. `features.py` ya calcula `atr_pct`, pero no está conectado a
+  `risk.py` todavía.
+- **Motor de backtesting** (con costos, sin look-ahead bias) y **walk-forward** — no existe. Es
+  probablemente el paso más importante antes de cambiar cualquier lógica de entrada/salida real,
+  incluido usar el `score_total` para decidir señales.
+- **Premium/descuento CEDEAR vs. subyacente**, **Monte Carlo**, **Machine Learning** — no
+  implementados.
+- **Base de datos, API REST propia, frontend React, Docker** — se descartó deliberadamente esa
+  dirección arquitectónica por ahora; el bot sigue siendo Python + Streamlit + archivos planos
+  (`cache/`, `logs/`, `rankings/`), pensado para uso individual, no como plataforma multi-usuario.

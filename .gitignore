@@ -7,5 +7,6 @@ logs/*.csv
 logs/*.log
 logs/*.json
 cache/
+rankings/
 .pytest_cache/
 *.egg-info/

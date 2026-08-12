@@ -9,7 +9,7 @@ from iol_bot.config import LOGS_DIR, Config
 from iol_bot.executor import OrderExecutor
 from iol_bot.logging_config import setup_logging
 from iol_bot.market_data import get_historical_prices_cached
-from iol_bot.market_scanner import scan_market
+from iol_bot.ranking import build_daily_ranking
 from iol_bot.risk import RiskManager, apply_position_override
 from iol_bot.signals_log import estado_from_execution_result, log_signal
 from iol_bot.strategy import SmaCrossoverRsiStrategy
@@ -113,9 +113,9 @@ def main():
             current_day = date.today()
 
         if is_market_open():
-            # Se re-escanea cada ciclo (3 llamadas, barato) para que el ranking de liquidez
-            # refleje el volumen operado hasta ese momento del día, no una foto vieja.
-            watchlist = scan_market(client, paneles=config.paneles, top_n=config.max_simbolos_a_analizar)
+            # Se recalcula el ranking cada ciclo (motor de scoring de iol_bot/ranking.py) para que
+            # refleje el volumen/precio operado hasta ese momento del día, no una foto vieja.
+            watchlist = build_daily_ranking(client, config)
             run_cycle(client, strategy, executor, risk_manager, watchlist)
         else:
             logger.info("Mercado cerrado, esperando...")

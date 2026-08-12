@@ -4,6 +4,7 @@ numpy>=1.24
 python-dotenv>=1.0
 tzdata>=2024.1
 streamlit>=1.35
+pyyaml>=6.0
 
 pytest>=8.0
 responses>=0.25
