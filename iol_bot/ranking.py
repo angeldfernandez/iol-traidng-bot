@@ -183,6 +183,10 @@ def build_daily_ranking(client, config, scoring_cfg=None, today=None):
     if not ranked.empty:
         ranked = ranked.assign(rank=range(1, len(ranked) + 1))
         df = df.merge(ranked[["simbolo", "rank"]], on="simbolo", how="left")
+    else:
+        # Sin elegibles, "rank" tampoco se crea vía el merge — pero el dashboard (y cualquier
+        # lector del CSV) asume que la columna siempre existe.
+        df["rank"] = float("nan")
 
     save_ranking(today, df)
 

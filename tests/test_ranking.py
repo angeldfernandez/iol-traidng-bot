@@ -155,6 +155,7 @@ def test_build_daily_ranking_with_zero_eligible_candidates_does_not_crash(monkey
     assert watchlist == []
     ranking_hoy = load_ranking(date(2024, 6, 3))
     assert "score_total" in ranking_hoy.columns
+    assert "rank" in ranking_hoy.columns  # el dashboard filtra por esta columna sin chequear que exista
     assert ranking_hoy["eligible"].sum() == 0
 
 
