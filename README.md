@@ -219,6 +219,54 @@ mercado argentino). Por eso los features de este motor llegan como máximo a ven
 ruedas — SMA200, momentum a 252 días y máximo/mínimo de 52 semanas quedan pendientes para cuando se
 amplíe esa ventana de cache (ver "Qué falta" más abajo).
 
+## Motor de backtesting (`scripts/run_backtest.py`)
+
+```bash
+python -m scripts.run_backtest
+```
+
+Corre la estrategia (`SmaCrossoverRsiStrategy` por defecto, intercambiable) día por día sobre
+históricos reales de IOL, con costos de transacción, sin look-ahead bias, y compara el resultado
+contra comprar-y-mantener un benchmark. Reusa **sin modificar** la misma lógica de riesgo que corre
+en vivo/paper trading (`apply_position_override`, `RiskManager`) — el objetivo es validar el
+comportamiento real del bot contra el pasado, no simular algo distinto.
+
+Todo se configura en `config/backtest.yaml` (universo de símbolos, rango de fechas, capital inicial,
+costos, límites de riesgo, benchmark) — nada hardcodeado en el código.
+
+**Cache propio, separado del bot en vivo**: `cache/` (el que usa `main.py`/`paper_trade.py`) se
+recorta siempre a ~180 días — no alcanza para backtestear meses/años, y compartirlo haría que el
+bot en vivo le siga achicando la historia al backtest. Por eso el backtest tiene su propio cache
+(`backtest_cache/`, nunca se recorta, solo se une con lo ya cacheado) y pide rangos de fecha
+explícitos en vez de "los últimos N días".
+
+Al terminar, imprime una tabla comparativa estrategia vs. benchmark con las métricas de la sección
+26 del prompt maestro (retorno total, CAGR, volatilidad, Sharpe, Sortino, Calmar, máximo drawdown y
+su duración, win rate, profit factor, ganancia/pérdida promedio, expectancy, número de operaciones,
+turnover, costos totales, exposición promedio) y guarda el detalle en
+`backtests/{fecha_hora}/` (`equity_curve.csv`, `trades.csv`, `summary.json` — carpeta local,
+gitignored, igual que `cache/`/`rankings/`).
+
+**Limitaciones a tener en cuenta antes de confiar en un resultado:**
+
+- **El universo es una lista fija elegida a mano** (`config/backtest.yaml`), NO una reconstrucción
+  histórica real de lo que el motor de ranking (`iol_bot/ranking.py`) habría elegido cada día — ese
+  historial recién empezó a existir hoy (`rankings/`). Este backtest responde "¿cómo le habría ido
+  a la estrategia en estos símbolos puntuales?", no "¿cómo le habría ido al bot completo, selección
+  incluida?".
+- **`ajustada="sinAjustar"`** (mismo default que el resto del bot) significa que un split accionario
+  dentro del rango backtesteado aparece como un salto de precio de un día para el otro — puede
+  disparar una señal o un stop-loss/take-profit falso. Revisar manualmente si un símbolo tuvo splits
+  en el período.
+- **Los costos de `config/backtest.yaml` son placeholders**, no tarifas reales verificadas de IOL —
+  contrastarlos contra la tabla de aranceles vigente antes de sacar conclusiones.
+- **El rango histórico real que devuelve la API de IOL no está confirmado** — `backtest_data.py`
+  loguea un warning si la serie recibida arranca después de la fecha pedida, pero cuánta historia
+  hay disponible de verdad para cada símbolo se descubre corriendo el script, no está documentado.
+
+**Explícitamente fuera de esta fase** (quedan pendientes): walk-forward testing, Monte Carlo,
+optimización de parámetros, y un tab de dashboard para visualizar corridas pasadas.
+
 ## Dashboard
 
 ```bash
@@ -266,7 +314,8 @@ consultar cuenta/cotizaciones u operar a mano charlando con un asistente, no par
   hoy se corre manualmente con `python -m iol_bot.main`.
 - La estrategia SMA+RSI en sí (`iol_bot/strategy.py`) no cambió con el motor de scoring/ranking —
   sigue siendo la misma señal técnica simple, ahora aplicada sobre una watchlist mejor seleccionada.
-  Conviene backtestearla con tus propios datos históricos antes de confiar en ella para operar en real.
+  Ya se puede backtestear con `python -m scripts.run_backtest` (ver sección "Motor de backtesting")
+  antes de confiar en ella para operar en real.
 - Considerá agregar notificaciones (email/Telegram) cuando el circuit breaker se activa o una orden
   es rechazada, para enterarte sin tener que mirar los logs.
 - Los nombres de panel (`merval`, `burcap`, `cedears`) los encontré probando contra la API real, no
@@ -290,11 +339,12 @@ una vez en un bot que opera con dinero real sin sandbox:
 - **Stops por ATR y position sizing por riesgo** — `risk.py` sigue usando take-profit/stop-loss de
   % fijo y monto fijo por orden. `features.py` ya calcula `atr_pct`, pero no está conectado a
   `risk.py` todavía.
-- **Motor de backtesting** (con costos, sin look-ahead bias) y **walk-forward** — no existe. Es
-  probablemente el paso más importante antes de cambiar cualquier lógica de entrada/salida real,
-  incluido usar el `score_total` para decidir señales.
-- **Premium/descuento CEDEAR vs. subyacente**, **Monte Carlo**, **Machine Learning** — no
-  implementados.
+- **Walk-forward, Monte Carlo y optimización de parámetros** — el motor de backtesting de un solo
+  período ya existe (`scripts/run_backtest.py`, ver sección propia), pero correrlo repetidamente
+  sobre ventanas móviles o buscar parámetros no está implementado. Sigue siendo el paso importante
+  antes de usar el `score_total` del ranking para decidir señales de entrada/salida, no solo para
+  elegir el universo.
+- **Premium/descuento CEDEAR vs. subyacente** y **Machine Learning** — no implementados.
 - **Base de datos, API REST propia, frontend React, Docker** — se descartó deliberadamente esa
   dirección arquitectónica por ahora; el bot sigue siendo Python + Streamlit + archivos planos
   (`cache/`, `logs/`, `rankings/`), pensado para uso individual, no como plataforma multi-usuario.

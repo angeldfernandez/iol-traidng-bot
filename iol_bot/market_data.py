@@ -14,18 +14,14 @@ DATE_FMT = "%Y-%m-%d"
 CACHE_STALE_DAYS = 5
 
 
-def get_historical_prices(client, simbolo, mercado="bCBA", dias=180, ajustada="sinAjustar"):
-    """Trae la serie histórica de un símbolo y la devuelve como DataFrame ordenado por fecha.
-
-    Columnas: fecha, apertura, maximo, minimo, cierre, variacion
-    """
-    fecha_hasta = datetime.now()
-    fecha_desde = fecha_hasta - timedelta(days=dias)
-
+def _fetch_and_parse_serie(client, simbolo, fecha_desde_str, fecha_hasta_str, mercado, ajustada):
+    """Cuerpo compartido de la llamada a serie_historica + parseo a DataFrame diario. Usado tanto
+    por get_historical_prices (ventana de `dias` hacia atrás desde ahora) como por
+    iol_bot/backtest_data.py (rango de fechas explícito, para backtesting)."""
     raw = client.serie_historica(
         simbolo=simbolo,
-        fecha_desde=fecha_desde.strftime(DATE_FMT),
-        fecha_hasta=fecha_hasta.strftime(DATE_FMT),
+        fecha_desde=fecha_desde_str,
+        fecha_hasta=fecha_hasta_str,
         mercado=mercado,
         ajustada=ajustada,
     )
@@ -53,6 +49,19 @@ def get_historical_prices(client, simbolo, mercado="bCBA", dias=180, ajustada="s
     df = df[cols]
 
     return _to_daily_bars(df)
+
+
+def get_historical_prices(client, simbolo, mercado="bCBA", dias=180, ajustada="sinAjustar"):
+    """Trae la serie histórica de un símbolo y la devuelve como DataFrame ordenado por fecha.
+
+    Columnas: fecha, apertura, maximo, minimo, cierre, variacion
+    """
+    fecha_hasta = datetime.now()
+    fecha_desde = fecha_hasta - timedelta(days=dias)
+
+    return _fetch_and_parse_serie(
+        client, simbolo, fecha_desde.strftime(DATE_FMT), fecha_hasta.strftime(DATE_FMT), mercado, ajustada
+    )
 
 
 def _to_daily_bars(df):

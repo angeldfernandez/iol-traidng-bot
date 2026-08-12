@@ -8,5 +8,7 @@ logs/*.log
 logs/*.json
 cache/
 rankings/
+backtest_cache/
+backtests/
 .pytest_cache/
 *.egg-info/

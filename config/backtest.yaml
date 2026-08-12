@@ -1,0 +1,58 @@
+# Configuración de scripts/run_backtest.py (iol_bot/backtest_engine.py, backtest_metrics.py).
+#
+# Nada de esto está hardcodeado en el código: se puede ajustar acá sin tocar Python.
+
+universe:
+  # Lista elegida a mano — NO es una reconstrucción histórica real del TOP 50 del motor de ranking
+  # (iol_bot/ranking.py recién empezó a persistir rankings diarios hoy, 2026-08-12; no existe forma
+  # de saber qué símbolos habría elegido el embudo de scoring en fechas pasadas). Este backtest
+  # responde "¿cómo le habría ido a la estrategia en ESTOS símbolos puntuales?", no "¿cómo le
+  # habría ido al bot completo, selección incluida?" — esa segunda pregunta solo se puede responder
+  # a futuro, a medida que se acumule historial real en rankings/.
+  simbolos:
+    - {simbolo: GGAL, mercado: bCBA}
+    - {simbolo: YPFD, mercado: bCBA}
+    - {simbolo: PAMP, mercado: bCBA}
+    - {simbolo: BMA, mercado: bCBA}
+
+date_range:
+  # Rango ambicioso a propósito: si IOL devuelve menos historia de la pedida, backtest_data.py lo
+  # loguea como warning en vez de fallar — así el primer corrida sirve para descubrir empíricamente
+  # cuánta historia real expone la API para estos símbolos.
+  desde: "2023-08-12"
+  hasta: "2026-08-11"
+
+capital_inicial: 1000000.0
+
+costs:
+  # PLACEHOLDERS ilustrativos — NO son tarifas reales verificadas de IOL. Contrastar contra la
+  # tabla de aranceles vigente (invertironline.com/tarifas) o tu propio resumen de cuenta antes de
+  # confiar en estos números para decidir nada.
+  comision_pct: 0.5
+  derechos_mercado_pct: 0.08
+  slippage_pct: 0.05
+
+metrics:
+  # Tasa libre de riesgo anual usada en Sharpe/Sortino. 0% por defecto: la tasa libre de riesgo en
+  # ARS es ambigua y muy dependiente del régimen (plazo fijo, LECAPs, etc.) — un valor "razonable"
+  # sesgaría el resultado en silencio. Ajustar acá si querés comparar contra una tasa específica.
+  risk_free_rate_annual: 0.0
+
+# Límites de riesgo a usar durante el backtest. Si se deja en null (default), se usan los
+# RiskLimits REALES de tu .env — así el backtest valida el comportamiento que el bot correría hoy
+# en la vida real. Completar este mapa (los 5 campos de RiskLimits) para explorar "¿y si estos
+# límites fueran distintos?" sin tocar .env.
+risk_override: null
+# risk_override:
+#   max_monto_por_orden_pct: 20
+#   max_exposicion_por_simbolo_pct: 20
+#   max_perdida_diaria_pct: 5
+#   take_profit_pct: 8
+#   stop_loss_pct: 5
+
+# Benchmark buy & hold para comparar. Si se deja en null, se usa el mismo símbolo que
+# config/scoring.yaml (relative_strength.benchmark_simbolo/benchmark_mercado — SPY/bCBA hoy), para
+# que el ranking y el backtest no puedan desincronizarse en qué es "el mercado de referencia".
+benchmark:
+  simbolo: null
+  mercado: null
