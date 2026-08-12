@@ -95,6 +95,31 @@ def test_status_reports_pnl_vs_initial_cash(tmp_path):
     assert round(status["pnl_total_pct"], 4) == round(status["pnl_total"] / 100_000 * 100, 4)
 
 
+def test_init_persists_initial_state_immediately_when_no_file_exists(tmp_path):
+    state_path = tmp_path / "paper.json"
+    assert not state_path.exists()
+
+    PaperPortfolio(state_path, initial_cash=500_000)
+
+    assert state_path.exists()  # no hace falta esperar a la primera compra/venta
+    status = load_status(state_path)
+    assert status["cash"] == 500_000
+    assert status["positions"] == {}
+
+
+def test_init_does_not_overwrite_existing_state(tmp_path):
+    state_path = tmp_path / "paper.json"
+    pp1 = PaperPortfolio(state_path, initial_cash=100_000)
+    pp1.buy("GGAL", 10, 100.0)
+
+    # Reconstruir con un initial_cash distinto no debe pisar lo ya persistido.
+    PaperPortfolio(state_path, initial_cash=999_999)
+
+    status = load_status(state_path)
+    assert status["cash"] == 99_000
+    assert status["positions"]["GGAL"]["cantidad"] == 10
+
+
 def test_state_persists_across_instances(tmp_path):
     state_path = tmp_path / "paper.json"
     pp1 = PaperPortfolio(state_path, initial_cash=100_000)

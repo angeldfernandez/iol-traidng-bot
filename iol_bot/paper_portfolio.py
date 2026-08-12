@@ -16,7 +16,12 @@ class PaperPortfolio:
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.positions = {}  # simbolo -> {"cantidad": int, "costo_promedio": float}
+        es_sesion_nueva = not self.state_path.exists()
         self._load()
+        if es_sesion_nueva:
+            # Persistir el estado inicial ya al arrancar (no recién en la primera compra/venta),
+            # para que el dashboard pueda mostrar el saldo virtual desde el minuto uno.
+            self._save()
 
     def buy(self, simbolo, cantidad, precio):
         costo = cantidad * precio
