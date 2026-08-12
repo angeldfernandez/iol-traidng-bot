@@ -35,7 +35,7 @@ def isolated_trades_log(tmp_path, monkeypatch):
 
 def _risk_manager(**overrides):
     defaults = dict(
-        max_monto_por_orden=50_000,
+        max_monto_por_orden_pct=50,  # 50% de portfolio_value=100_000 = $50.000, igual que antes
         max_exposicion_por_simbolo_pct=50,
         max_perdida_diaria_pct=5,
         take_profit_pct=8,
@@ -79,7 +79,8 @@ def test_live_buy_calls_client_when_risk_allows(isolated_trades_log):
 
 def test_live_buy_skipped_when_risk_denies(isolated_trades_log):
     client = FakeClient()
-    rm = _risk_manager(max_monto_por_orden=1)  # monto insuficiente para comprar 1 unidad a 100
+    # 0.05% de portfolio_value=100_000 = $50, monto insuficiente para comprar 1 unidad a 100
+    rm = _risk_manager(max_monto_por_orden_pct=0.05)
     executor = OrderExecutor(client, rm, dry_run=False)
     signal = TradeSignal("GGAL", Signal.BUY, precio=100.0, motivo="test")
 

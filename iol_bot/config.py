@@ -34,7 +34,7 @@ def _env_int(name, default):
 
 @dataclass
 class RiskLimits:
-    max_monto_por_orden: float
+    max_monto_por_orden_pct: float
     max_exposicion_por_simbolo_pct: float
     max_perdida_diaria_pct: float
     take_profit_pct: float
@@ -77,7 +77,7 @@ class Config:
         paneles = [p.strip().lower() for p in paneles_raw.split(",") if p.strip()]
 
         risk = RiskLimits(
-            max_monto_por_orden=_env_float("MAX_MONTO_POR_ORDEN", 50_000),
+            max_monto_por_orden_pct=_env_float("MAX_MONTO_POR_ORDEN_PCT", 20),
             max_exposicion_por_simbolo_pct=_env_float("MAX_EXPOSICION_POR_SIMBOLO_PCT", 20),
             max_perdida_diaria_pct=_env_float("MAX_PERDIDA_DIARIA_PCT", 5),
             take_profit_pct=_env_float("TAKE_PROFIT_PCT", 8),

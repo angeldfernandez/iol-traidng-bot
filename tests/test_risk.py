@@ -10,17 +10,19 @@ from iol_bot.strategy import Signal, TradeSignal
 
 
 def test_calc_buy_quantity_respects_monto_max():
+    # 1% de 100_000 = 1000 ARS de tope por orden
     cantidad = calc_buy_quantity(
-        precio=100, monto_max_orden=1000, portfolio_value=100_000, exposicion_actual_simbolo=0, max_exposicion_pct=50
+        precio=100, monto_max_orden_pct=1, portfolio_value=100_000, exposicion_actual_simbolo=0, max_exposicion_pct=50
     )
     assert cantidad == 10  # 1000 / 100
 
 
 def test_calc_buy_quantity_respects_exposicion_max():
-    # tope de exposición: 10% de 100_000 = 10_000, ya hay 9_500 expuestos -> solo quedan 500 disponibles
+    # tope por orden: 100% de la cartera (no ata). tope de exposición: 10% de 100_000 = 10_000,
+    # ya hay 9_500 expuestos -> solo quedan 500 disponibles
     cantidad = calc_buy_quantity(
         precio=100,
-        monto_max_orden=100_000,
+        monto_max_orden_pct=100,
         portfolio_value=100_000,
         exposicion_actual_simbolo=9_500,
         max_exposicion_pct=10,
@@ -31,7 +33,7 @@ def test_calc_buy_quantity_respects_exposicion_max():
 def test_calc_buy_quantity_zero_when_no_margin_left():
     cantidad = calc_buy_quantity(
         precio=100,
-        monto_max_orden=100_000,
+        monto_max_orden_pct=100,
         portfolio_value=100_000,
         exposicion_actual_simbolo=10_000,
         max_exposicion_pct=10,
@@ -46,7 +48,7 @@ def test_check_daily_circuit_breaker_triggers_above_threshold():
 
 def _limits(**overrides):
     defaults = dict(
-        max_monto_por_orden=50_000,
+        max_monto_por_orden_pct=20,
         max_exposicion_por_simbolo_pct=20,
         max_perdida_diaria_pct=5,
         take_profit_pct=8,

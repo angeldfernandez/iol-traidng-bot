@@ -6,12 +6,14 @@ from datetime import datetime
 logger = logging.getLogger("iol_bot.risk")
 
 
-def calc_buy_quantity(precio, monto_max_orden, portfolio_value, exposicion_actual_simbolo, max_exposicion_pct):
-    """Cantidad de unidades a comprar respetando el monto máx. por orden y el tope de exposición
-    por símbolo. Devuelve 0 si no hay margen disponible."""
+def calc_buy_quantity(precio, monto_max_orden_pct, portfolio_value, exposicion_actual_simbolo, max_exposicion_pct):
+    """Cantidad de unidades a comprar respetando el monto máx. por orden (como % de la cartera,
+    NO un monto fijo en ARS — así no deja afuera instrumentos caros a medida que suben de precio o
+    la cartera crece) y el tope de exposición por símbolo. Devuelve 0 si no hay margen disponible."""
     if precio <= 0 or portfolio_value <= 0:
         return 0
 
+    monto_max_orden = portfolio_value * (monto_max_orden_pct / 100)
     exposicion_max_valor = portfolio_value * (max_exposicion_pct / 100)
     margen_disponible = exposicion_max_valor - exposicion_actual_simbolo
     monto_a_usar = min(monto_max_orden, max(margen_disponible, 0))
@@ -122,7 +124,7 @@ class RiskManager:
 
         cantidad = calc_buy_quantity(
             precio,
-            self.limits.max_monto_por_orden,
+            self.limits.max_monto_por_orden_pct,
             portfolio_value,
             exposicion_actual_simbolo,
             self.limits.max_exposicion_por_simbolo_pct,

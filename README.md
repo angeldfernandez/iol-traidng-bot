@@ -181,7 +181,9 @@ intercambiable, se pueden agregar otras estrategias sin tocar el resto del bot.
 
 Antes de cualquier orden se aplican estos límites (configurables en `.env`):
 
-- **Monto máximo por orden** (`MAX_MONTO_POR_ORDEN`).
+- **Monto máximo por orden, como % de la cartera** (`MAX_MONTO_POR_ORDEN_PCT`, default 20% — igual
+  al de exposición por símbolo de abajo). No es un monto fijo en ARS: escala solo con el tamaño de
+  la cartera, así no deja afuera sin querer instrumentos que cotizan caro por unidad.
 - **Exposición máxima por símbolo** como % de la cartera total (`MAX_EXPOSICION_POR_SIMBOLO_PCT`),
   calculada contra `GET /api/estadocuenta` y `GET /api/portafolio`.
 - **Circuit breaker de pérdida diaria** (`MAX_PERDIDA_DIARIA_PCT`): compara el valor de la cartera
