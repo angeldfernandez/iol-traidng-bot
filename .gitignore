@@ -12,3 +12,4 @@ backtest_cache/
 backtests/
 .pytest_cache/
 *.egg-info/
+NOTAS_SESION.md
