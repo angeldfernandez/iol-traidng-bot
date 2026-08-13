@@ -29,7 +29,7 @@ from iol_bot.ranking import build_daily_ranking, diff_rankings, get_current_rank
 from iol_bot.risk import load_status
 from iol_bot.scoring_config import ScoringConfig
 from iol_bot.signals_log import SIGNALS_LOG
-from scripts.paper_trade import PAPER_PORTFOLIO_PATH, PAPER_SIGNALS_LOG, PAPER_TRADES_LOG
+from scripts.paper_trade import PAPER_PORTFOLIO_PATH, PAPER_RISK_STATE_PATH, PAPER_SIGNALS_LOG, PAPER_TRADES_LOG
 from scripts.run_backtest import BACKTESTS_DIR
 
 st.set_page_config(page_title="iol-trading-bot", layout="wide", page_icon="📊")
@@ -229,18 +229,41 @@ with tab_paper:
         initial_cash = paper_status.get("initial_cash", 0.0)
 
         precios_cache = {simbolo: precio_actual_para_dashboard(simbolo) for simbolo in positions}
-        valorizado = cash + sum(
+        valor_posiciones = sum(
             p["cantidad"] * (precios_cache[simbolo] if precios_cache[simbolo] is not None else p["costo_promedio"])
             for simbolo, p in positions.items()
         )
-        pnl = valorizado - initial_cash
-        pnl_pct = (pnl / initial_cash * 100) if initial_cash else 0
+        valorizado = cash + valor_posiciones
+        pnl_total = valorizado - initial_cash
+        pnl_total_pct = (pnl_total / initial_cash * 100) if initial_cash else 0
 
+        # Ganancia del día: la persiste RiskManager en cada ciclo de scripts/paper_trade.py (mismo
+        # mecanismo que el circuit breaker de la cuenta real) — compara contra el valor de la
+        # cartera al comienzo del día, no contra el capital inicial de toda la sesión.
+        paper_risk_status = load_status(PAPER_RISK_STATE_PATH)
+        ganancia_diaria = paper_risk_status.get("daily_pnl") if paper_risk_status else None
+        baseline_dia = (paper_risk_status.get("baseline_value") or 0) if paper_risk_status else 0
+        ganancia_diaria_pct = (ganancia_diaria / baseline_dia * 100) if ganancia_diaria is not None and baseline_dia else None
+
+        st.write("**Composición de la cartera**")
         col1, col2, col3 = st.columns(3)
         col1.metric("Cartera virtual inicial", f"${initial_cash:,.2f}")
-        col2.metric("Cash disponible", f"${cash:,.2f}")
-        col3.metric("Valorizado total (a último precio)", f"${valorizado:,.2f}", delta=f"{pnl:,.2f} ({pnl_pct:.2f}%)")
-        st.caption(f"Última actualización: {paper_status.get('updated_at', '—')}")
+        col2.metric("Cash invertido (posiciones)", f"${valor_posiciones:,.2f}")
+        col3.metric("Cash disponible", f"${cash:,.2f}")
+
+        st.write("**Resultado**")
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Valor total de la cartera", f"${valorizado:,.2f}")
+        if ganancia_diaria is not None:
+            col5.metric("Ganancia/pérdida HOY", f"${ganancia_diaria:,.2f}", delta=f"{ganancia_diaria_pct:.2f}%")
+        else:
+            col5.metric("Ganancia/pérdida HOY", "N/D")
+        col6.metric("Ganancia/pérdida total", f"${pnl_total:,.2f}", delta=f"{pnl_total_pct:.2f}%")
+
+        actualizaciones = f"Posiciones: {paper_status.get('updated_at', '—')}"
+        if paper_risk_status:
+            actualizaciones += f"  |  P&L diario: {paper_risk_status.get('updated_at', '—')}"
+        st.caption(actualizaciones)
 
         if positions:
             filas_paper = []
