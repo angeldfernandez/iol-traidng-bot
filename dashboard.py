@@ -296,6 +296,7 @@ with tab_paper:
                             "cantidad": p["cantidad"],
                             "costo promedio": p["costo_promedio"],
                             "último precio": "sin cache todavía",
+                            "valor total": None,
                             "ganancia %": None,
                             "ganancia $": None,
                         }
@@ -308,6 +309,7 @@ with tab_paper:
                         "cantidad": p["cantidad"],
                         "costo promedio": p["costo_promedio"],
                         "último precio": precio_actual,
+                        "valor total": round(p["cantidad"] * precio_actual, 2),
                         "ganancia %": round(ganancia_pct, 2),
                         "ganancia $": round((precio_actual - p["costo_promedio"]) * p["cantidad"], 2),
                     }
