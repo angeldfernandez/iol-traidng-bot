@@ -6,6 +6,7 @@ vivo, y lee los CSV/JSON que main.py va generando en logs/). Uso:
     streamlit run dashboard.py
 """
 import json
+from datetime import date
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -88,14 +89,29 @@ def read_csv_log(path, columns):
     return pd.read_csv(path)
 
 
-def ultimo_precio_cacheado(simbolo, mercado="bCBA"):
-    """Último precio conocido del cache local (cache/{mercado}_{simbolo}.csv) — el mismo dato que
-    ya usa el bot para calcular indicadores, así que no cuesta ninguna llamada extra a la API.
-    None si todavía no hay cache para ese símbolo."""
+@st.cache_data(ttl=60)
+def precio_actual_para_dashboard(simbolo, mercado="bCBA"):
+    """Último precio para mostrar en el dashboard. Si el cache local
+    (cache/{mercado}_{simbolo}.csv) ya está actualizado a HOY, lo usa tal cual — el mismo dato que
+    ya usa el bot, sin gastar una llamada extra. Si no (ej. una posición que cayó del pool de
+    candidatos del ranking y dejó de actualizarse sola — le pasó a PATH el 2026-08-12, se quedó
+    congelada en el precio de entrada todo el día), pide la cotización en vivo: una sola llamada
+    por símbolo por minuto (cacheado acá mismo), no en cada refresco del dashboard.
+    None solo si ninguna de las dos fuentes tiene dato."""
     df = load_cache(simbolo, mercado)
-    if df.empty:
-        return None
-    return float(df["cierre"].iloc[-1])
+    if not df.empty and df["fecha"].max().date() == date.today():
+        return float(df["cierre"].iloc[-1])
+
+    client, _ = get_client_and_config()
+    try:
+        cot = client.cotizacion(simbolo, mercado=mercado)
+        precio = cot.get("ultimoPrecio")
+        if precio:
+            return float(precio)
+    except IOLApiError:
+        pass
+
+    return float(df["cierre"].iloc[-1]) if not df.empty else None
 
 
 def _listar_backtests():
@@ -212,7 +228,7 @@ with tab_paper:
         positions = paper_status.get("positions", {})
         initial_cash = paper_status.get("initial_cash", 0.0)
 
-        precios_cache = {simbolo: ultimo_precio_cacheado(simbolo) for simbolo in positions}
+        precios_cache = {simbolo: precio_actual_para_dashboard(simbolo) for simbolo in positions}
         valorizado = cash + sum(
             p["cantidad"] * (precios_cache[simbolo] if precios_cache[simbolo] is not None else p["costo_promedio"])
             for simbolo, p in positions.items()
