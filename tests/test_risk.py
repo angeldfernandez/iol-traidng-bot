@@ -317,6 +317,57 @@ def test_risk_manager_persists_state_to_disk(tmp_path):
     assert rm2.status()["baseline_value"] == 100_000
 
 
+def test_risk_manager_auto_resets_when_persisted_state_is_from_a_previous_day(tmp_path):
+    import json
+
+    state_path = tmp_path / "risk_state.json"
+    # Estado persistido "de ayer": halted=True y con un baseline de un día anterior. Sin la
+    # autocorrección, este estado quedaría pegado para siempre en un proceso que arranca de cero
+    # cada día (ver iol_bot/risk.py::RiskManager.__init__ — bug real detectado el 2026-08-13).
+    state_path.write_text(
+        json.dumps(
+            {
+                "baseline_value": 1_000_000.0,
+                "daily_pnl": -80_000.0,
+                "halted": True,
+                "max_perdida_diaria_pct": 5.0,
+                "updated_at": "2020-01-01T10:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rm = RiskManager(_limits(), state_path=state_path)
+
+    assert not rm.is_halted()
+    assert rm.status()["baseline_value"] is None
+    assert rm.status()["daily_pnl"] == 0.0
+
+
+def test_risk_manager_keeps_state_when_persisted_state_is_from_today(tmp_path):
+    import json
+    from datetime import datetime
+
+    state_path = tmp_path / "risk_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "baseline_value": 100_000.0,
+                "daily_pnl": -8_000.0,
+                "halted": True,
+                "max_perdida_diaria_pct": 5.0,
+                "updated_at": datetime.now().isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rm = RiskManager(_limits(), state_path=state_path)
+
+    assert rm.is_halted()  # se mantiene: el estado es de HOY, no hay que autocorregir nada
+    assert rm.status()["baseline_value"] == 100_000.0
+
+
 def test_load_status_reads_persisted_state(tmp_path):
     from iol_bot.risk import load_status
 

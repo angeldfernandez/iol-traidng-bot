@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from datetime import datetime
+from datetime import date, datetime
 
 logger = logging.getLogger("iol_bot.risk")
 
@@ -142,8 +142,19 @@ class RiskManager:
         self._baseline_value = None
         self._daily_pnl = 0.0
         self._halted = False
+        self._loaded_date = None
         if state_path:
             self._load_state()
+            # Autocorrección: si el estado persistido es de un día anterior, resetear ya mismo.
+            # Necesario porque el proceso que corre esto (scripts/paper_trade.py, y potencialmente
+            # main.py si se reinicia a diario) arranca un `while` nuevo cada día — su propio
+            # chequeo de "¿cambió el día?" nunca se dispara en el primer ciclo de un proceso
+            # recién iniciado, porque `current_day` se fija en HOY apenas arranca. Sin esto, un
+            # baseline viejo queda pegado indefinidamente (bug real detectado el 2026-08-13: la
+            # "ganancia de hoy" en el dashboard en realidad medía la ganancia acumulada desde el
+            # último reset real, días atrás, no desde la apertura de ese día).
+            if self._loaded_date is not None and self._loaded_date != date.today():
+                self.reset_daily()
 
     def reset_daily(self):
         self._baseline_value = None
@@ -228,6 +239,12 @@ class RiskManager:
         self._baseline_value = data.get("baseline_value")
         self._daily_pnl = data.get("daily_pnl", 0.0)
         self._halted = data.get("halted", False)
+        updated_at = data.get("updated_at")
+        if updated_at:
+            try:
+                self._loaded_date = datetime.fromisoformat(updated_at).date()
+            except ValueError:
+                self._loaded_date = None
 
 
 def load_status(state_path):
