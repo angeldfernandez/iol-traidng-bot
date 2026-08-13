@@ -6,7 +6,7 @@ vivo, y lee los CSV/JSON que main.py va generando en logs/). Uso:
     streamlit run dashboard.py
 """
 import json
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -239,11 +239,28 @@ with tab_paper:
 
         # Ganancia del día: la persiste RiskManager en cada ciclo de scripts/paper_trade.py (mismo
         # mecanismo que el circuit breaker de la cuenta real) — compara contra el valor de la
-        # cartera al comienzo del día, no contra el capital inicial de toda la sesión.
+        # cartera al comienzo del día, no contra el capital inicial de toda la sesión. Si el último
+        # ciclo registrado es de un día anterior (ej. antes de que abra el mercado, o si el proceso
+        # se cayó — ver logs/paper_trade_run.log), NO es el P&L de hoy todavía: mostrarlo como tal
+        # sería engañoso, así que se marca aparte en vez de mezclarlo con datos frescos.
         paper_risk_status = load_status(PAPER_RISK_STATE_PATH)
-        ganancia_diaria = paper_risk_status.get("daily_pnl") if paper_risk_status else None
-        baseline_dia = (paper_risk_status.get("baseline_value") or 0) if paper_risk_status else 0
-        ganancia_diaria_pct = (ganancia_diaria / baseline_dia * 100) if ganancia_diaria is not None and baseline_dia else None
+        ganancia_diaria, ganancia_diaria_pct, dato_diario_de_otro_dia = None, None, False
+        if paper_risk_status:
+            actualizado_en = paper_risk_status.get("updated_at")
+            es_de_hoy = False
+            if actualizado_en:
+                try:
+                    es_de_hoy = datetime.fromisoformat(actualizado_en).date() == date.today()
+                except ValueError:
+                    es_de_hoy = False
+
+            if es_de_hoy:
+                ganancia_diaria = paper_risk_status.get("daily_pnl")
+                baseline_dia = paper_risk_status.get("baseline_value") or 0
+                if ganancia_diaria is not None and baseline_dia:
+                    ganancia_diaria_pct = ganancia_diaria / baseline_dia * 100
+            else:
+                dato_diario_de_otro_dia = True
 
         st.write("**Composición de la cartera**")
         col1, col2, col3 = st.columns(3)
@@ -256,6 +273,9 @@ with tab_paper:
         col4.metric("Valor total de la cartera", f"${valorizado:,.2f}")
         if ganancia_diaria is not None:
             col5.metric("Ganancia/pérdida HOY", f"${ganancia_diaria:,.2f}", delta=f"{ganancia_diaria_pct:.2f}%")
+        elif dato_diario_de_otro_dia:
+            col5.metric("Ganancia/pérdida HOY", "N/D")
+            st.caption("⚠️ Todavía no corrió ningún ciclo hoy — el último dato guardado es de un día anterior.")
         else:
             col5.metric("Ganancia/pérdida HOY", "N/D")
         col6.metric("Ganancia/pérdida total", f"${pnl_total:,.2f}", delta=f"{pnl_total_pct:.2f}%")
