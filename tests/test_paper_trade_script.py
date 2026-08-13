@@ -71,9 +71,44 @@ class FakeStrategyBuy:
         return TradeSignal(simbolo, Signal.BUY, precio=float(price_df["cierre"].iloc[-1]), motivo="test")
 
 
+class FakeStrategyHold:
+    def evaluate(self, simbolo, price_df):
+        return TradeSignal(simbolo, Signal.HOLD, precio=float(price_df["cierre"].iloc[-1]), motivo="test")
+
+
 class FakeClientCotizacion:
     def cotizacion(self, simbolo, **kwargs):
         return {"ultimoPrecio": 100.0}
+
+
+def test_run_cycle_marks_all_positions_to_market_even_if_in_watchlist(tmp_path, monkeypatch):
+    # Antes del fix del 2026-08-13, una posición que seguía en el watchlist no recibía un precio
+    # fresco vía cotizacion() al PRINCIPIO del ciclo (recién más tarde, dentro del loop) — el
+    # circuit breaker/daily P&L la medía todavía a costo de compra en ese primer momento, dando un
+    # resultado inconsistente con el valorizado total real de la cartera.
+    monkeypatch.setattr(
+        paper_trade_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100.0]}),
+    )
+
+    portfolio = PaperPortfolio(tmp_path / "paper.json", initial_cash=100_000)
+    portfolio.buy("GGAL", 10, 90.0)  # posición ya abierta, costo_promedio=90, cash=99_100
+
+    limits = RiskLimits(
+        max_monto_por_orden_pct=100, max_exposicion_por_simbolo_pct=100, max_perdida_diaria_pct=100,
+        take_profit_pct=100, stop_loss_pct=100,
+    )
+    risk_manager = RiskManager(limits)  # sin state_path: no toca disco
+
+    client = FakeClient(precios={"GGAL": 123.0})
+    watchlist = [{"simbolo": "GGAL", "mercado": "bCBA", "ultimo_precio": 100.0}]  # GGAL SÍ está en el watchlist
+
+    run_cycle(client, FakeStrategyHold(), risk_manager, portfolio, watchlist)
+
+    assert "GGAL" in client.calls  # se le pidió cotización directa aunque estuviera en el watchlist
+    # baseline del día = cash(99_100) + 10 x precio fresco(123), NO a costo de compra (90)
+    assert risk_manager.status()["baseline_value"] == pytest.approx(99_100 + 10 * 123.0)
 
 
 def test_run_cycle_rotates_weaker_position_to_fund_better_ranked_candidate(tmp_path, monkeypatch):

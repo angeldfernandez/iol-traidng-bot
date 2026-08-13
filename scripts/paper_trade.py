@@ -99,17 +99,19 @@ def _intentar_rotacion(risk_manager, portfolio, simbolo_candidato, precios_actua
 
 def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
     precios_actuales = {}
-    simbolos_watchlist = {item["simbolo"] for item in watchlist}
 
-    # Marcar a mercado posiciones que quedaron fuera del watchlist de este ciclo (top-N por volumen
-    # puede variar ciclo a ciclo). Si falla, valorizado_total() cae de vuelta al costo promedio.
+    # Marcar a mercado TODAS las posiciones abiertas antes de medir la cartera del ciclo — no solo
+    # las que quedaron fuera del watchlist. Antes, una posición que SÍ seguía en el watchlist recién
+    # conseguía precio fresco más adelante en este mismo ciclo (dentro del loop de abajo), así que
+    # el portfolio_value que ve el circuit breaker/daily P&L la medía todavía a costo de compra —
+    # resultado: "ganancia de hoy" podía mostrar un número inconsistente con el valorizado total
+    # real de la cartera (bug real detectado el 2026-08-13 comparando ambos en el dashboard).
     for simbolo in list(portfolio.positions):
-        if simbolo not in simbolos_watchlist:
-            try:
-                cot = client.cotizacion(simbolo)
-                precios_actuales[simbolo] = cot.get("ultimoPrecio", portfolio.positions[simbolo]["costo_promedio"])
-            except IOLApiError:
-                pass
+        try:
+            cot = client.cotizacion(simbolo)
+            precios_actuales[simbolo] = cot.get("ultimoPrecio", portfolio.positions[simbolo]["costo_promedio"])
+        except IOLApiError:
+            pass
 
     portfolio_value = portfolio.valorizado_total(precios_actuales)
     risk_manager.update_portfolio_value(portfolio_value)
