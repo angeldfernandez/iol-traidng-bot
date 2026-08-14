@@ -229,7 +229,7 @@ def main():
             current_day = date.today()
 
         try:
-            watchlist = build_daily_ranking(client, config)
+            watchlist = build_daily_ranking(client, config, held_symbols=set(portfolio.positions))
             status = run_cycle(client, strategy, risk_manager, portfolio, watchlist)
             logger.info(
                 "Ciclo completo | cash=$%.2f valorizado=$%.2f pnl=$%.2f (%.2f%%) posiciones=%s",

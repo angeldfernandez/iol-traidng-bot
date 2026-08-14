@@ -50,7 +50,13 @@ def _scores_del_ranking_actual():
     ranking_hoy = get_current_ranking()
     if ranking_hoy is None or ranking_hoy.empty or "score_total" not in ranking_hoy.columns:
         return {}
-    return dict(zip(ranking_hoy["simbolo"], ranking_hoy["score_total"]))
+    # dropna: un score_total NaN (ej. una posición en cartera con historia de precios insuficiente
+    # para calcular features) rompe la comparación de find_rotation_candidate en iol_bot/risk.py —
+    # cualquier comparación con NaN da False en Python, así que si un símbolo NaN queda como "peor
+    # score visto", ningún candidato real puede reemplazarlo después. Tratarlo como ausente
+    # (mismo comportamiento que si el símbolo no estuviera en el ranking) es lo seguro.
+    validos = ranking_hoy.dropna(subset=["score_total"])
+    return dict(zip(validos["simbolo"], validos["score_total"]))
 
 
 def _intentar_rotacion(executor, risk_manager, simbolo_candidato, posiciones, portfolio_value, exposicion_total_actual, scores_por_simbolo):
@@ -167,9 +173,14 @@ def main():
 
         if is_market_open():
             try:
+                held_symbols = set()
+                try:
+                    held_symbols = set(build_posiciones_por_simbolo(client.portafolio()))
+                except IOLApiError:
+                    logger.warning("No se pudo leer el portafolio para incluir posiciones abiertas en el ranking de hoy")
                 # Se recalcula el ranking cada ciclo (motor de scoring de iol_bot/ranking.py) para
                 # que refleje el volumen/precio operado hasta ese momento del día, no una foto vieja.
-                watchlist = build_daily_ranking(client, config)
+                watchlist = build_daily_ranking(client, config, held_symbols=held_symbols)
                 run_cycle(client, strategy, executor, risk_manager, watchlist)
             except IOLApiError as exc:
                 logger.error("Error de API en este ciclo, se lo salta y se reintenta en el próximo: %s", exc)

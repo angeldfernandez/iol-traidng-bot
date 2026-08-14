@@ -32,6 +32,19 @@ class FakeClient:
         return [{"fechaHora": "2024-01-01T00:00:00", "ultimoPrecio": 100}]
 
 
+def test_scores_del_ranking_actual_excludes_nan_scores(monkeypatch):
+    # Un score_total NaN (símbolo en cartera con historia de precios insuficiente) debe tratarse
+    # como ausente, no como un valor comparable -- ver el comentario de la función: cualquier
+    # comparación con NaN da False en Python, lo que rompía find_rotation_candidate si un NaN
+    # quedaba fijado como "peor score visto".
+    ranking_hoy = pd.DataFrame({"simbolo": ["BUENO", "SIN_DATOS"], "score_total": [72.5, float("nan")]})
+    monkeypatch.setattr(main_module, "get_current_ranking", lambda: ranking_hoy)
+
+    scores = main_module._scores_del_ranking_actual()
+
+    assert scores == {"BUENO": 72.5}
+
+
 class FakeStrategy:
     def __init__(self, signal=Signal.HOLD):
         self.signal = signal

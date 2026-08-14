@@ -137,6 +137,74 @@ def test_per_symbol_api_error_does_not_crash_whole_run(monkeypatch):
     assert "error de datos" in fila_rota["motivo"]
 
 
+class FakeClientCotizacion:
+    def __init__(self, precios, volumen=500):
+        self.precios = precios
+        self.volumen = volumen
+
+    def cotizacion(self, simbolo, mercado="bCBA"):
+        return {"ultimoPrecio": self.precios[simbolo], "volumen": self.volumen}
+
+
+class FakeClientCotizacionError:
+    def cotizacion(self, simbolo, mercado="bCBA"):
+        raise IOLApiError("500 error simulado")
+
+
+def test_build_daily_ranking_scores_held_symbol_outside_candidate_pool(monkeypatch):
+    # Caso real del 2026-08-13: SE/PATH ya estaban en cartera pero cayeron del pool de mayor
+    # volumen (scan_market_candidates solo trae candidate_pool_size símbolos) y quedaron sin
+    # score_total -> find_rotation_candidate nunca podía evaluarlas para rotación.
+    candidatos = [_candidato("AAPL"), _candidato("GGAL")]
+    monkeypatch.setattr(ranking_module, "scan_market_candidates", lambda client, paneles, top_n, pais: candidatos)
+    monkeypatch.setattr(
+        ranking_module, "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: _price_df(),
+    )
+
+    client = FakeClientCotizacion({"HELD": 55.0}, volumen=1)  # volumen bajo -> no elegible
+    watchlist = build_daily_ranking(
+        client, FakeConfig(), scoring_cfg=_cfg(min_avg_volume=1000), today=date(2024, 6, 3), held_symbols={"HELD"}
+    )
+
+    ranking_hoy = load_ranking(date(2024, 6, 3))
+    fila_held = ranking_hoy[ranking_hoy["simbolo"] == "HELD"].iloc[0]
+    assert not bool(fila_held["eligible"])  # el volumen bajo la sigue descalificando como compra nueva
+    assert not pd.isna(fila_held["score_total"])  # pero ahora sí tiene score, para poder rotarla
+    assert "HELD" not in {item["simbolo"] for item in watchlist}  # no se cuela como candidata nueva
+
+
+def test_build_daily_ranking_skips_held_symbol_when_cotizacion_fails(monkeypatch):
+    candidatos = [_candidato("AAPL")]
+    monkeypatch.setattr(ranking_module, "scan_market_candidates", lambda client, paneles, top_n, pais: candidatos)
+    monkeypatch.setattr(
+        ranking_module, "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: _price_df(),
+    )
+
+    watchlist = build_daily_ranking(
+        FakeClientCotizacionError(), FakeConfig(), scoring_cfg=_cfg(), today=date(2024, 6, 3), held_symbols={"ROTA"}
+    )
+
+    ranking_hoy = load_ranking(date(2024, 6, 3))
+    assert "ROTA" not in set(ranking_hoy["simbolo"])
+    assert any(item["simbolo"] == "AAPL" for item in watchlist)
+
+
+def test_build_daily_ranking_does_not_duplicate_held_symbol_already_in_pool(monkeypatch):
+    candidatos = [_candidato("AAPL"), _candidato("GGAL")]
+    monkeypatch.setattr(ranking_module, "scan_market_candidates", lambda client, paneles, top_n, pais: candidatos)
+    monkeypatch.setattr(
+        ranking_module, "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: _price_df(),
+    )
+
+    build_daily_ranking(object(), FakeConfig(), scoring_cfg=_cfg(), today=date(2024, 6, 3), held_symbols={"GGAL"})
+
+    ranking_hoy = load_ranking(date(2024, 6, 3))
+    assert (ranking_hoy["simbolo"] == "GGAL").sum() == 1
+
+
 def test_build_daily_ranking_with_zero_eligible_candidates_does_not_crash(monkeypatch):
     # Caso real: corrida antes de la apertura del mercado, volumen_nominal=0 para todos los
     # candidatos -> nadie pasa el filtro de calidad. score_total/"{grupo}_score" deben existir

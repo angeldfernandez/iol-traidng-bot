@@ -79,7 +79,9 @@ def fetch_ranking():
     (ranking_hoy, ranking_anterior). Tarda más que fetch_watchlist porque trae/calcula features
     para todo el pool de candidatos configurado (no solo el TOP final)."""
     client, config = get_client_and_config()
-    build_daily_ranking(client, config)
+    paper_status = load_paper_status(PAPER_PORTFOLIO_PATH)
+    held_symbols = set(paper_status.get("positions", {})) if paper_status else set()
+    build_daily_ranking(client, config, held_symbols=held_symbols)
     return get_current_ranking(), get_previous_ranking()
 
 

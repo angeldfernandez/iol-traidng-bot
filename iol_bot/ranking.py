@@ -20,7 +20,7 @@ from iol_bot.client import IOLApiError
 from iol_bot.config import PROJECT_ROOT
 from iol_bot.features import compute_features
 from iol_bot.market_data import get_historical_prices_cached
-from iol_bot.market_scanner import scan_market_candidates
+from iol_bot.market_scanner import MERCADO, scan_market_candidates
 from iol_bot.scoring import compute_subscores
 from iol_bot.scoring_config import ScoringConfig
 
@@ -88,16 +88,50 @@ def _load_volume_history_matrix(before_day, lookback_days=60):
     return matriz.tail(lookback_days)
 
 
-def build_daily_ranking(client, config, scoring_cfg=None, today=None):
+def _incluir_posiciones_abiertas(client, candidatos, held_symbols):
+    """`scan_market_candidates` solo trae los `candidate_pool_size` símbolos de mayor volumen del
+    día — una posición que ya tenemos comprada puede caer de ese corte (como le pasó a SE/PATH el
+    2026-08-13) y quedar sin `score_total` en el ranking. Sin score, `find_rotation_candidate`
+    (iol_bot/risk.py) nunca puede evaluarla para rotación, aunque sea la peor de la cartera — queda
+    "protegida" por accidente, no por mérito. Acá se agrega cualquier símbolo en cartera que no
+    haya entrado al pool, con una cotización directa, para que abajo sí se le calcule score."""
+    if not held_symbols:
+        return candidatos
+
+    ya_presentes = {c["simbolo"] for c in candidatos}
+    faltantes = sorted(s for s in held_symbols if s not in ya_presentes)
+    for simbolo in faltantes:
+        try:
+            cot = client.cotizacion(simbolo, mercado=MERCADO)
+        except IOLApiError as exc:
+            logger.warning(
+                "No se pudo traer cotización de %s (en cartera, fuera del pool de volumen) para "
+                "scorearla hoy: %s", simbolo, exc,
+            )
+            continue
+        precio = cot.get("ultimoPrecio") or 0
+        volumen_nominal = (cot.get("volumen") or 0) * precio
+        candidatos.append(
+            {"simbolo": simbolo, "mercado": MERCADO, "ultimo_precio": precio, "volumen_nominal": volumen_nominal}
+        )
+    return candidatos
+
+
+def build_daily_ranking(client, config, scoring_cfg=None, today=None, held_symbols=None):
     """Pipeline completo. `config` es el Config operativo del bot (paneles, etc.), `scoring_cfg`
-    un ScoringConfig (se carga de config/scoring.yaml si no se pasa uno)."""
+    un ScoringConfig (se carga de config/scoring.yaml si no se pasa uno). `held_symbols` (opcional):
+    símbolos actualmente en cartera — se les garantiza un score_total aunque hayan caído del pool
+    de mayor volumen o no pasen el filtro de calidad, para que la rotación de posiciones los pueda
+    comparar contra candidatos nuevos (ver `_incluir_posiciones_abiertas`)."""
     scoring_cfg = scoring_cfg or ScoringConfig.load()
     today = today or date.today()
+    held_symbols = set(held_symbols or ())
 
     candidatos = scan_market_candidates(
         client, paneles=config.paneles, top_n=scoring_cfg.candidate_pool_size, pais="argentina"
     )
     candidatos = [c for c in candidatos if c["simbolo"] != scoring_cfg.benchmark_simbolo]
+    candidatos = _incluir_posiciones_abiertas(client, candidatos, held_symbols - {scoring_cfg.benchmark_simbolo})
 
     if not candidatos:
         logger.warning("build_daily_ranking: el scan de candidatos no devolvió símbolos")
@@ -157,11 +191,15 @@ def build_daily_ranking(client, config, scoring_cfg=None, today=None):
         filas.append(fila)
 
     df = pd.DataFrame(filas)
-    elegibles_df = df[df["eligible"]].set_index("simbolo")
+    # Pool que recibe score: elegibles (pueden ser candidatos nuevos de compra) MÁS cualquier
+    # posición ya abierta, aunque no sea elegible — así siempre tiene score_total para poder
+    # comparar la cartera actual contra el resto, sin que eso la habilite como candidata nueva
+    # (_sort_ranked, más abajo, sigue filtrando estrictamente por "eligible").
+    pool_para_scorear = df[df["eligible"] | df["simbolo"].isin(held_symbols)].set_index("simbolo")
 
-    if not elegibles_df.empty:
-        feature_cols = [c for grupo in scoring_cfg.groups.values() for c in grupo if c in elegibles_df.columns]
-        scored = compute_subscores(elegibles_df[feature_cols], scoring_cfg)
+    if not pool_para_scorear.empty:
+        feature_cols = [c for grupo in scoring_cfg.groups.values() for c in grupo if c in pool_para_scorear.columns]
+        scored = compute_subscores(pool_para_scorear[feature_cols], scoring_cfg)
         score_cols = [c for c in scored.columns if c not in feature_cols]
         scored_por_simbolo = scored[score_cols].reset_index().rename(columns={"index": "simbolo"})
         df = df.merge(scored_por_simbolo, on="simbolo", how="left")
@@ -172,11 +210,12 @@ def build_daily_ranking(client, config, scoring_cfg=None, today=None):
             df[f"{grupo}_score"] = float("nan")
         df["score_total"] = float("nan")
 
-    if len(elegibles_df) < scoring_cfg.top_n_final:
+    n_elegibles = int(df["eligible"].sum())
+    if n_elegibles < scoring_cfg.top_n_final:
         logger.warning(
             "Pool elegible (%d símbolos) por debajo del TOP final configurado (%d) — el scoring "
             "por percentil pierde resolución con pools chicos",
-            len(elegibles_df), scoring_cfg.top_n_final,
+            n_elegibles, scoring_cfg.top_n_final,
         )
 
     ranked = _sort_ranked(df).reset_index(drop=True)
