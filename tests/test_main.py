@@ -14,6 +14,7 @@ def isolated_signals_log(tmp_path, monkeypatch):
     log_path = tmp_path / "signals.csv"
     monkeypatch.setattr(signals_log_module, "SIGNALS_LOG", log_path)
     monkeypatch.setattr(signals_log_module, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(main_module, "EQUITY_LOG", tmp_path / "equity.csv")
     return log_path
 
 
@@ -160,6 +161,11 @@ def test_run_cycle_updates_risk_manager_and_dispatches_signals(isolated_signals_
         rows = list(csv.reader(f))
     assert rows[1][1] == "GGAL"
     assert rows[1][5] == "hold"
+
+    with open(main_module.EQUITY_LOG, newline="", encoding="utf-8") as f:
+        equity_rows = list(csv.reader(f))
+    assert equity_rows[0] == ["timestamp", "valorizado_total"]
+    assert equity_rows[1][1] == "100000.0"
 
 
 def test_run_cycle_does_not_rebuy_symbol_already_held(isolated_signals_log, monkeypatch):

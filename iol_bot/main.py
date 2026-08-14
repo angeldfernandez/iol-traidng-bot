@@ -1,3 +1,4 @@
+import csv
 import logging
 import time
 from datetime import date, datetime
@@ -15,6 +16,7 @@ from iol_bot.signals_log import estado_from_execution_result, log_signal
 from iol_bot.strategy import Signal, SmaCrossoverRsiStrategy, TradeSignal
 
 RISK_STATE_PATH = LOGS_DIR / "risk_state.json"
+EQUITY_LOG = LOGS_DIR / "equity.csv"
 
 logger = logging.getLogger("iol_bot.main")
 
@@ -44,6 +46,20 @@ def build_posiciones_por_simbolo(portafolio):
             "ppc": activo.get("ppc", 0.0),
         }
     return posiciones
+
+
+def _log_equity(portfolio_value):
+    """Un renglón por ciclo con el valor total de la cuenta REAL -- misma idea que
+    scripts/paper_trade.py::_log_paper_equity, para que la pestaña "Resumen" del dashboard pueda
+    dibujar la curva de equity de la cuenta real, no solo de paper trading. Arranca a juntarse
+    desde que se agrega este log, no es retroactivo."""
+    LOGS_DIR.mkdir(exist_ok=True)
+    is_new = not EQUITY_LOG.exists()
+    with open(EQUITY_LOG, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(["timestamp", "valorizado_total"])
+        writer.writerow([datetime.now().isoformat(), portfolio_value])
 
 
 def _scores_del_ranking_actual():
@@ -102,6 +118,7 @@ def run_cycle(client, strategy, executor, risk_manager, watchlist):
     # y posiciones acá arriba, que también vienen de una única lectura de portafolio()/estadocuenta().
     exposicion_total_actual = sum(p["valorizado"] for p in posiciones.values())
     risk_manager.update_portfolio_value(portfolio_value)
+    _log_equity(portfolio_value)
 
     # Rotación de posiciones (ver iol_bot/config.py — apagada por defecto): solo se calcula el
     # score del día si está habilitada, para no gastar de más en el caso común.

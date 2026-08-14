@@ -19,7 +19,7 @@ from iol_bot.client import IOLApiError, IOLClient
 from iol_bot.config import Config
 from iol_bot.executor import TRADES_LOG
 from iol_bot.indicators import rsi, sma
-from iol_bot.main import RISK_STATE_PATH
+from iol_bot.main import EQUITY_LOG, RISK_STATE_PATH
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.market_scanner import scan_market
 from iol_bot.paper_portfolio import load_status as load_paper_status
@@ -95,6 +95,71 @@ def read_csv_log(path, columns):
     if not path.exists():
         return pd.DataFrame(columns=columns)
     return pd.read_csv(path)
+
+
+def _grafico_composicion(segmentos):
+    """Barra horizontal apilada de una sola fila con los segmentos de composicion_cartera (ver
+    iol_bot/pnl.py) — reusada por la pestaña de cuenta real y la de paper trading."""
+    total_cartera = sum(s["valor"] for s in segmentos) or 1
+    fig = go.Figure()
+    for seg in segmentos:
+        pct = seg["valor"] / total_cartera * 100
+        fig.add_trace(
+            go.Bar(
+                x=[seg["valor"]],
+                y=["Cartera"],
+                orientation="h",
+                name=seg["nombre"],
+                marker=dict(color=seg["color"], line=dict(color="#fcfcfb", width=2)),
+                text=f"{seg['nombre']} {pct:.0f}%" if pct >= 6 else "",
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(color="#ffffff", size=12),
+                hovertemplate=f"<b>{seg['nombre']}</b><br>${seg['valor']:,.2f} ({pct:.1f}%)<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        barmode="stack",
+        template="plotly_white",
+        height=130,
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.25),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+    )
+    return fig
+
+
+def _grafico_equity(equity_df, referencia=None):
+    """Línea de área con el valor de la cartera en el tiempo. `referencia` (opcional): valor de
+    una línea punteada horizontal (ej. capital inicial de paper trading) — sin equivalente para la
+    cuenta real, que no tiene un "capital inicial" fijo, así que ahí queda sin esa línea."""
+    equity_df = equity_df.copy()
+    equity_df["timestamp"] = pd.to_datetime(equity_df["timestamp"])
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=equity_df["timestamp"],
+            y=equity_df["valorizado_total"],
+            name="Valor de la cartera",
+            line=dict(color=COLOR_ESTRATEGIA, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(42, 120, 214, 0.08)",
+            hovertemplate="%{x|%d/%m %H:%M}<br>$%{y:,.2f}<extra></extra>",
+        )
+    )
+    if referencia is not None:
+        fig.add_hline(y=referencia, line=dict(color=COLOR_MUTED, width=1, dash="dot"))
+    fig.update_layout(
+        template="plotly_white",
+        height=280,
+        margin=dict(l=10, r=10, t=20, b=10),
+        yaxis_title="Valor de la cartera (ARS)",
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
 
 
 @st.cache_data(ttl=60)
@@ -193,6 +258,29 @@ with tab_resumen:
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
     else:
         st.info("No hay posiciones abiertas en la cartera.")
+
+    if activos:
+        st.write("**Composición actual**")
+        valor_posiciones_reales = sum(a.get("valorizado", 0) or 0 for a in activos)
+        # No hay un campo de "cash disponible" verificado en /api/estadocuenta todavía (a
+        # diferencia de paper trading, que lo lleva como ledger propio) -- se deriva de
+        # totalEnPesos - valorizado de posiciones en vez de asumir un campo de la API sin
+        # confirmar contra la documentación real.
+        cash_estimado = total_en_pesos - valor_posiciones_reales
+        positions_reales = {
+            a["titulo"]["simbolo"]: {"cantidad": a.get("cantidad", 0), "costo_promedio": a.get("ppc", 0.0)}
+            for a in activos
+        }
+        precios_reales = {a["titulo"]["simbolo"]: a.get("ultimoPrecio") for a in activos}
+        segmentos_reales = composicion_cartera(cash_estimado, positions_reales, precios_reales)
+        st.plotly_chart(_grafico_composicion(segmentos_reales), use_container_width=True)
+
+    st.write("**Evolución del valor de la cartera**")
+    equity_df_real = read_csv_log(EQUITY_LOG, ["timestamp", "valorizado_total"])
+    if equity_df_real.empty:
+        st.caption("Todavía no hay historial suficiente — se va guardando un punto por cada ciclo del bot.")
+    else:
+        st.plotly_chart(_grafico_equity(equity_df_real), use_container_width=True)
 
     st.divider()
     st.subheader("Circuit breaker de pérdida diaria")
@@ -295,64 +383,14 @@ with tab_paper:
 
         st.write("**Composición actual**")
         segmentos = composicion_cartera(cash, positions, precios_cache)
-        total_cartera = sum(s["valor"] for s in segmentos) or 1
-        fig_composicion = go.Figure()
-        for seg in segmentos:
-            pct = seg["valor"] / total_cartera * 100
-            fig_composicion.add_trace(
-                go.Bar(
-                    x=[seg["valor"]],
-                    y=["Cartera"],
-                    orientation="h",
-                    name=seg["nombre"],
-                    marker=dict(color=seg["color"], line=dict(color="#fcfcfb", width=2)),
-                    text=f"{seg['nombre']} {pct:.0f}%" if pct >= 6 else "",
-                    textposition="inside",
-                    insidetextanchor="middle",
-                    textfont=dict(color="#ffffff", size=12),
-                    hovertemplate=f"<b>{seg['nombre']}</b><br>${seg['valor']:,.2f} ({pct:.1f}%)<extra></extra>",
-                )
-            )
-        fig_composicion.update_layout(
-            barmode="stack",
-            template="plotly_white",
-            height=130,
-            margin=dict(l=10, r=10, t=10, b=10),
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.25),
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False),
-        )
-        st.plotly_chart(fig_composicion, use_container_width=True)
+        st.plotly_chart(_grafico_composicion(segmentos), use_container_width=True)
 
         st.write("**Evolución del valor de la cartera**")
         equity_df = read_csv_log(PAPER_EQUITY_LOG, ["timestamp", "valorizado_total", "cash", "pnl_total", "pnl_total_pct"])
         if equity_df.empty:
             st.caption("Todavía no hay historial suficiente — se va guardando un punto por cada ciclo del bot.")
         else:
-            equity_df["timestamp"] = pd.to_datetime(equity_df["timestamp"])
-            fig_equity = go.Figure()
-            fig_equity.add_trace(
-                go.Scatter(
-                    x=equity_df["timestamp"],
-                    y=equity_df["valorizado_total"],
-                    name="Valor de la cartera",
-                    line=dict(color=COLOR_ESTRATEGIA, width=2),
-                    fill="tozeroy",
-                    fillcolor="rgba(42, 120, 214, 0.08)",
-                    hovertemplate="%{x|%d/%m %H:%M}<br>$%{y:,.2f}<extra></extra>",
-                )
-            )
-            fig_equity.add_hline(y=initial_cash, line=dict(color=COLOR_MUTED, width=1, dash="dot"))
-            fig_equity.update_layout(
-                template="plotly_white",
-                height=280,
-                margin=dict(l=10, r=10, t=20, b=10),
-                yaxis_title="Valor de la cartera (ARS)",
-                showlegend=False,
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig_equity, use_container_width=True)
+            st.plotly_chart(_grafico_equity(equity_df, referencia=initial_cash), use_container_width=True)
 
         if positions:
             filas_paper = []
