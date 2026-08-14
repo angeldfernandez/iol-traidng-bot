@@ -62,7 +62,7 @@ absoluto, solo calcula y loguea qué habría hecho.
 python -m iol_bot.main
 ```
 
-El loop principal corre solo en horario de mercado de BYMA (11:00–17:00, hora Argentina, de lunes a
+El loop principal corre solo en horario de mercado de BYMA (10:30–17:00, hora Argentina, de lunes a
 viernes — ajustable en `iol_bot/main.py` si hace falta). En cada ciclo re-escanea el mercado (ver
 sección siguiente) y evalúa el universo resultante.
 

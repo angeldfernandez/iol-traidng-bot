@@ -2,6 +2,7 @@ import csv
 import logging
 import time
 from datetime import date, datetime
+from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
 from iol_bot.auth import IOLAuth
@@ -21,8 +22,11 @@ EQUITY_LOG = LOGS_DIR / "equity.csv"
 logger = logging.getLogger("iol_bot.main")
 
 BYMA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
-BYMA_OPEN_HOUR = 11
-BYMA_CLOSE_HOUR = 17
+# BYMA adelantó su horario de apertura a las 10:30 (antes 11:00) para alinearse con la apertura
+# de Wall Street -- ver aviso oficial de BYMA. Comparación a nivel minuto (no solo hora), porque
+# 10:30 cae en la mitad de una hora.
+BYMA_OPEN_TIME = clock_time(10, 30)
+BYMA_CLOSE_TIME = clock_time(17, 0)
 
 # Pausa entre símbolos al procesar el ciclo: con hasta MAX_SIMBOLOS_A_ANALIZAR (default 50)
 # llamadas de serie histórica por ciclo, conviene no ráfaguear la API.
@@ -33,7 +37,7 @@ def is_market_open(now=None):
     now = now or datetime.now(BYMA_TZ)
     if now.weekday() >= 5:  # sábado/domingo
         return False
-    return BYMA_OPEN_HOUR <= now.hour < BYMA_CLOSE_HOUR
+    return BYMA_OPEN_TIME <= now.time() < BYMA_CLOSE_TIME
 
 
 def build_posiciones_por_simbolo(portafolio):

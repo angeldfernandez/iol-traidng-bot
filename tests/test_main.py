@@ -1,12 +1,40 @@
 import csv
+from datetime import datetime
 
 import pandas as pd
 import pytest
 
 import iol_bot.main as main_module
 import iol_bot.signals_log as signals_log_module
-from iol_bot.main import _intentar_rotacion, build_posiciones_por_simbolo, run_cycle
+from iol_bot.main import BYMA_TZ, _intentar_rotacion, build_posiciones_por_simbolo, is_market_open, run_cycle
 from iol_bot.strategy import Signal, TradeSignal
+
+
+def _byma_datetime(year, month, day, hour, minute):
+    return datetime(year, month, day, hour, minute, tzinfo=BYMA_TZ)
+
+
+def test_is_market_open_before_1030_is_closed():
+    # BYMA adelantó la apertura a las 10:30 (antes 11:00) -- 10:29 todavía no abrió.
+    assert not is_market_open(_byma_datetime(2026, 8, 14, 10, 29))
+
+
+def test_is_market_open_at_1030_is_open():
+    assert is_market_open(_byma_datetime(2026, 8, 14, 10, 30))
+
+
+def test_is_market_open_mid_session_is_open():
+    assert is_market_open(_byma_datetime(2026, 8, 14, 13, 0))
+
+
+def test_is_market_open_at_1700_is_closed():
+    assert not is_market_open(_byma_datetime(2026, 8, 14, 17, 0))
+
+
+def test_is_market_open_weekend_is_closed_regardless_of_hour():
+    sabado = _byma_datetime(2026, 8, 15, 12, 0)  # 2026-08-15 es sábado
+    assert sabado.weekday() == 5
+    assert not is_market_open(sabado)
 
 
 @pytest.fixture(autouse=True)
