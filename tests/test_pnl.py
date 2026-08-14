@@ -1,4 +1,4 @@
-from iol_bot.pnl import daily_pnl_pesos
+from iol_bot.pnl import COMPOSICION_SLOTS, composicion_cartera, daily_pnl_pesos
 
 
 def test_daily_pnl_pesos_positive_variation():
@@ -22,3 +22,58 @@ def test_daily_pnl_pesos_handles_none():
 
 def test_daily_pnl_pesos_handles_total_wipeout_denominator():
     assert daily_pnl_pesos(0, -100) == 0.0
+
+
+def test_composicion_cartera_incluye_cash_y_posiciones_con_precio_actual():
+    positions = {"GGAL": {"cantidad": 10, "costo_promedio": 90.0}, "YPFD": {"cantidad": 5, "costo_promedio": 200.0}}
+    precios_cache = {"GGAL": 120.0, "YPFD": 190.0}
+
+    segmentos = composicion_cartera(1000.0, positions, precios_cache)
+
+    valores = {s["nombre"]: s["valor"] for s in segmentos}
+    assert valores["Cash disponible"] == 1000.0
+    assert valores["GGAL"] == 1200.0  # 10 x 120
+    assert valores["YPFD"] == 950.0  # 5 x 190
+
+
+def test_composicion_cartera_no_confunde_precio_cero_con_precio_ausente():
+    # precio=0.0 es "distinto de None" -> se usa tal cual (aunque sea un valor raro), no se
+    # confunde con "no hay precio en cache todavía" (que sí cae a costo_promedio).
+    positions = {"SIM": {"cantidad": 10, "costo_promedio": 100.0}}
+    segmentos = composicion_cartera(0.0, positions, precios_cache={"SIM": 0.0})
+
+    assert next(s for s in segmentos if s["nombre"] == "SIM")["valor"] == 0.0
+
+
+def test_composicion_cartera_usa_costo_promedio_si_falta_precio_en_cache():
+    positions = {"PATH": {"cantidad": 16, "costo_promedio": 11940.0}}
+    segmentos = composicion_cartera(0.0, positions, precios_cache={"PATH": None})
+
+    fila_path = next(s for s in segmentos if s["nombre"] == "PATH")
+    assert fila_path["valor"] == 16 * 11940.0
+
+
+def test_composicion_cartera_ordena_por_tamaño_y_asigna_slots_por_orden():
+    positions = {
+        "CHICA": {"cantidad": 1, "costo_promedio": 100.0},
+        "GRANDE": {"cantidad": 1, "costo_promedio": 900.0},
+    }
+    segmentos = composicion_cartera(500.0, positions, precios_cache={})
+
+    nombres_en_orden = [s["nombre"] for s in segmentos]
+    assert nombres_en_orden == ["GRANDE", "Cash disponible", "CHICA"]
+    assert next(s for s in segmentos if s["nombre"] == "GRANDE")["color"] == COMPOSICION_SLOTS[0]
+    assert next(s for s in segmentos if s["nombre"] == "CHICA")["color"] == COMPOSICION_SLOTS[1]
+
+
+def test_composicion_cartera_agrupa_en_otros_mas_alla_del_septimo_simbolo():
+    # 7 símbolos, pero solo hay 6 slots categóricos -> el más chico debe caer en "Otros".
+    positions = {f"SIM{i}": {"cantidad": 1, "costo_promedio": float(100 - i)} for i in range(7)}
+    segmentos = composicion_cartera(0.0, positions, precios_cache={})
+
+    nombres = {s["nombre"] for s in segmentos}
+    assert "Otros (1)" in nombres
+    assert "SIM6" not in nombres  # el de menor valor (100-6=94) quedó agrupado
+    # Los 6 símbolos más grandes conservan su propio segmento
+    for i in range(6):
+        assert f"SIM{i}" in nombres

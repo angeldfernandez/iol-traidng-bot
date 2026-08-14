@@ -23,13 +23,19 @@ from iol_bot.main import RISK_STATE_PATH
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.market_scanner import scan_market
 from iol_bot.paper_portfolio import load_status as load_paper_status
-from iol_bot.pnl import daily_pnl_pesos
+from iol_bot.pnl import composicion_cartera, daily_pnl_pesos
 from iol_bot.price_cache import load_cache
 from iol_bot.ranking import build_daily_ranking, diff_rankings, get_current_ranking, get_previous_ranking
 from iol_bot.risk import load_status
 from iol_bot.scoring_config import ScoringConfig
 from iol_bot.signals_log import SIGNALS_LOG
-from scripts.paper_trade import PAPER_PORTFOLIO_PATH, PAPER_RISK_STATE_PATH, PAPER_SIGNALS_LOG, PAPER_TRADES_LOG
+from scripts.paper_trade import (
+    PAPER_EQUITY_LOG,
+    PAPER_PORTFOLIO_PATH,
+    PAPER_RISK_STATE_PATH,
+    PAPER_SIGNALS_LOG,
+    PAPER_TRADES_LOG,
+)
 from scripts.run_backtest import BACKTESTS_DIR
 
 st.set_page_config(page_title="iol-trading-bot", layout="wide", page_icon="📊")
@@ -286,6 +292,67 @@ with tab_paper:
         if paper_risk_status:
             actualizaciones += f"  |  P&L diario: {paper_risk_status.get('updated_at', '—')}"
         st.caption(actualizaciones)
+
+        st.write("**Composición actual**")
+        segmentos = composicion_cartera(cash, positions, precios_cache)
+        total_cartera = sum(s["valor"] for s in segmentos) or 1
+        fig_composicion = go.Figure()
+        for seg in segmentos:
+            pct = seg["valor"] / total_cartera * 100
+            fig_composicion.add_trace(
+                go.Bar(
+                    x=[seg["valor"]],
+                    y=["Cartera"],
+                    orientation="h",
+                    name=seg["nombre"],
+                    marker=dict(color=seg["color"], line=dict(color="#fcfcfb", width=2)),
+                    text=f"{seg['nombre']} {pct:.0f}%" if pct >= 6 else "",
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    textfont=dict(color="#ffffff", size=12),
+                    hovertemplate=f"<b>{seg['nombre']}</b><br>${seg['valor']:,.2f} ({pct:.1f}%)<extra></extra>",
+                )
+            )
+        fig_composicion.update_layout(
+            barmode="stack",
+            template="plotly_white",
+            height=130,
+            margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.25),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
+        st.plotly_chart(fig_composicion, use_container_width=True)
+
+        st.write("**Evolución del valor de la cartera**")
+        equity_df = read_csv_log(PAPER_EQUITY_LOG, ["timestamp", "valorizado_total", "cash", "pnl_total", "pnl_total_pct"])
+        if equity_df.empty:
+            st.caption("Todavía no hay historial suficiente — se va guardando un punto por cada ciclo del bot.")
+        else:
+            equity_df["timestamp"] = pd.to_datetime(equity_df["timestamp"])
+            fig_equity = go.Figure()
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_df["timestamp"],
+                    y=equity_df["valorizado_total"],
+                    name="Valor de la cartera",
+                    line=dict(color=COLOR_ESTRATEGIA, width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(42, 120, 214, 0.08)",
+                    hovertemplate="%{x|%d/%m %H:%M}<br>$%{y:,.2f}<extra></extra>",
+                )
+            )
+            fig_equity.add_hline(y=initial_cash, line=dict(color=COLOR_MUTED, width=1, dash="dot"))
+            fig_equity.update_layout(
+                template="plotly_white",
+                height=280,
+                margin=dict(l=10, r=10, t=20, b=10),
+                yaxis_title="Valor de la cartera (ARS)",
+                showlegend=False,
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_equity, use_container_width=True)
 
         if positions:
             filas_paper = []

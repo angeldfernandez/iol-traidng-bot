@@ -32,6 +32,7 @@ PAPER_PORTFOLIO_PATH = LOGS_DIR / "paper_portfolio.json"
 PAPER_RISK_STATE_PATH = LOGS_DIR / "paper_risk_state.json"
 PAPER_TRADES_LOG = LOGS_DIR / "paper_trades.csv"
 PAPER_SIGNALS_LOG = LOGS_DIR / "paper_signals.csv"
+PAPER_EQUITY_LOG = LOGS_DIR / "paper_equity.csv"
 
 REQUEST_DELAY_SECONDS = 0.3
 
@@ -65,6 +66,24 @@ def _log_paper_signal(trade_signal, estado):
             trade_signal.precio,
             trade_signal.motivo,
             estado,
+        ],
+    )
+
+
+def _log_paper_equity(status):
+    """Un renglón por ciclo con el valorizado total -- es la única fuente que tiene el dashboard
+    para dibujar la curva de equity del paper trading en vivo (a diferencia de los backtests, acá
+    no existe de antes un historial de valorizado por día, así que arranca a juntarse desde que se
+    agrega este log, no retroactivo)."""
+    _log_csv(
+        PAPER_EQUITY_LOG,
+        ["timestamp", "valorizado_total", "cash", "pnl_total", "pnl_total_pct"],
+        [
+            datetime.now().isoformat(),
+            status["valorizado_total"],
+            status["cash"],
+            status["pnl_total"],
+            status["pnl_total_pct"],
         ],
     )
 
@@ -187,7 +206,9 @@ def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
         if i < len(watchlist) - 1:
             time.sleep(REQUEST_DELAY_SECONDS)
 
-    return portfolio.status(precios_actuales)
+    status = portfolio.status(precios_actuales)
+    _log_paper_equity(status)
+    return status
 
 
 def _mark_to_market_final(client, portfolio):

@@ -17,6 +17,7 @@ def isolated_paper_logs(tmp_path, monkeypatch):
     # por la cartera) — sin esto, correr estos tests escribe basura en los logs REALES del usuario.
     monkeypatch.setattr(paper_trade_module, "PAPER_TRADES_LOG", tmp_path / "paper_trades.csv")
     monkeypatch.setattr(paper_trade_module, "PAPER_SIGNALS_LOG", tmp_path / "paper_signals.csv")
+    monkeypatch.setattr(paper_trade_module, "PAPER_EQUITY_LOG", tmp_path / "paper_equity.csv")
 
 
 class FakeClient:
@@ -109,6 +110,31 @@ def test_run_cycle_marks_all_positions_to_market_even_if_in_watchlist(tmp_path, 
     assert "GGAL" in client.calls  # se le pidió cotización directa aunque estuviera en el watchlist
     # baseline del día = cash(99_100) + 10 x precio fresco(123), NO a costo de compra (90)
     assert risk_manager.status()["baseline_value"] == pytest.approx(99_100 + 10 * 123.0)
+
+
+def test_run_cycle_appends_a_row_to_the_equity_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        paper_trade_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100.0]}),
+    )
+
+    portfolio = PaperPortfolio(tmp_path / "paper.json", initial_cash=100_000)
+    portfolio.buy("GGAL", 10, 90.0)
+
+    limits = RiskLimits(
+        max_monto_por_orden_pct=100, max_exposicion_por_simbolo_pct=100, max_perdida_diaria_pct=100,
+        take_profit_pct=100, stop_loss_pct=100,
+    )
+    risk_manager = RiskManager(limits)
+    client = FakeClient(precios={"GGAL": 123.0})
+    watchlist = [{"simbolo": "GGAL", "mercado": "bCBA", "ultimo_precio": 100.0}]
+
+    status = run_cycle(client, FakeStrategyHold(), risk_manager, portfolio, watchlist)
+
+    equity_log = pd.read_csv(paper_trade_module.PAPER_EQUITY_LOG)
+    assert len(equity_log) == 1
+    assert equity_log.iloc[0]["valorizado_total"] == pytest.approx(status["valorizado_total"])
 
 
 def test_run_cycle_rotates_weaker_position_to_fund_better_ranked_candidate(tmp_path, monkeypatch):
