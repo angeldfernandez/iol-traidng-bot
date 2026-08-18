@@ -1,12 +1,19 @@
 import csv
-from datetime import datetime
+from datetime import datetime, time
 
 import pandas as pd
 import pytest
 
 import iol_bot.main as main_module
 import iol_bot.signals_log as signals_log_module
-from iol_bot.main import BYMA_TZ, _intentar_rotacion, build_posiciones_por_simbolo, is_market_open, run_cycle
+from iol_bot.main import (
+    BYMA_TZ,
+    _intentar_rotacion,
+    build_posiciones_por_simbolo,
+    is_market_open,
+    run_cycle,
+    should_trade_now,
+)
 from iol_bot.strategy import Signal, TradeSignal
 
 
@@ -35,6 +42,32 @@ def test_is_market_open_weekend_is_closed_regardless_of_hour():
     sabado = _byma_datetime(2026, 8, 15, 12, 0)  # 2026-08-15 es sábado
     assert sabado.weekday() == 5
     assert not is_market_open(sabado)
+
+
+class FakeConfigTradingStart:
+    def __init__(self, trading_start_time=time(11, 0)):
+        self.trading_start_time = trading_start_time
+
+
+def test_should_trade_now_false_before_configured_start_even_if_market_open():
+    # Mercado ya abrió (10:30) pero todavía no llegó el horario configurado para operar (11:00).
+    config = FakeConfigTradingStart(trading_start_time=time(11, 0))
+    assert not should_trade_now(config, now=_byma_datetime(2026, 8, 14, 10, 45))
+
+
+def test_should_trade_now_true_at_configured_start():
+    config = FakeConfigTradingStart(trading_start_time=time(11, 0))
+    assert should_trade_now(config, now=_byma_datetime(2026, 8, 14, 11, 0))
+
+
+def test_should_trade_now_false_when_market_closed_even_past_configured_start():
+    config = FakeConfigTradingStart(trading_start_time=time(11, 0))
+    assert not should_trade_now(config, now=_byma_datetime(2026, 8, 14, 18, 0))
+
+
+def test_should_trade_now_respects_a_different_configured_time():
+    config = FakeConfigTradingStart(trading_start_time=time(10, 30))
+    assert should_trade_now(config, now=_byma_datetime(2026, 8, 14, 10, 30))
 
 
 @pytest.fixture(autouse=True)

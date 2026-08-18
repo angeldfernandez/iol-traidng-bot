@@ -19,7 +19,7 @@ from iol_bot.auth import IOLAuth
 from iol_bot.client import IOLApiError, IOLClient
 from iol_bot.config import LOGS_DIR, Config
 from iol_bot.logging_config import setup_logging
-from iol_bot.main import _scores_del_ranking_actual, is_market_open
+from iol_bot.main import _scores_del_ranking_actual, is_market_open, should_trade_now
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.paper_portfolio import PaperPortfolio
 from iol_bot.ranking import build_daily_ranking, get_current_ranking
@@ -248,6 +248,14 @@ def main():
         if date.today() != current_day:
             risk_manager.reset_daily()
             current_day = date.today()
+
+        if not should_trade_now(config):
+            logger.info(
+                "Mercado abierto pero todavía no llegó el horario de arranque configurado (%s) -- esperando",
+                config.trading_start_time,
+            )
+            time.sleep(config.loop_interval_minutes * 60)
+            continue
 
         try:
             watchlist = build_daily_ranking(client, config, held_symbols=set(portfolio.positions))

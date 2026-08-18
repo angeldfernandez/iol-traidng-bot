@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from datetime import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +33,19 @@ def _env_int(name, default):
     return int(value) if value else default
 
 
+def _env_time(name, default):
+    """Parsea "HH:MM" de una variable de entorno a datetime.time. Si falta o está mal formada,
+    devuelve `default` en vez de fallar -- una config rota acá no debería tumbar todo el bot."""
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        hora, minuto = value.strip().split(":")
+        return time(int(hora), int(minuto))
+    except (ValueError, TypeError):
+        return default
+
+
 @dataclass
 class RiskLimits:
     max_monto_por_orden_pct: float
@@ -62,6 +76,11 @@ class Config:
     loop_interval_minutes: int = 15
     paper_initial_cash: float = 100_000.0
     risk: RiskLimits = None
+    # BYMA abre a las 10:30, pero esa primera media hora sincroniza contra la apertura de Wall
+    # Street (9:30 ET) -- precios y spreads más ruidosos de lo normal. Este umbral separa "el
+    # mercado ya está abierto" (is_market_open, en iol_bot/main.py) de "el bot ya puede empezar a
+    # operar" -- configurable, no hardcodeado, para poder ajustarlo sin tocar código.
+    trading_start_time: time = time(11, 0)
 
     @property
     def effective_dry_run(self):
@@ -109,4 +128,5 @@ class Config:
             loop_interval_minutes=_env_int("LOOP_INTERVAL_MINUTES", 15),
             paper_initial_cash=_env_float("PAPER_INITIAL_CASH", 100_000.0),
             risk=risk,
+            trading_start_time=_env_time("TRADING_START_TIME", time(11, 0)),
         )

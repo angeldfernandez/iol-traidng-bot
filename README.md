@@ -66,6 +66,13 @@ El loop principal corre solo en horario de mercado de BYMA (10:30–17:00, hora 
 viernes — ajustable en `iol_bot/main.py` si hace falta). En cada ciclo re-escanea el mercado (ver
 sección siguiente) y evalúa el universo resultante.
 
+**`TRADING_START_TIME`** (default `11:00`, en `.env`): la apertura de BYMA a las 10:30 sincroniza
+contra la apertura de Wall Street, así que esa primera media hora puede traer precios/spreads más
+ruidosos. Este umbral, separado de `is_market_open`, retrasa solo el arranque de señales/órdenes
+del bot — el dashboard y el circuit breaker siguen considerando "abierto" al mercado desde las
+10:30. No está validado con backtest (el motor solo tiene granularidad diaria, no intradía) — es
+un ajuste a validar en paper trading, no una mejora comprobada como TP/SL.
+
 ### De universo a watchlist: scan de liquidez + motor de scoring/ranking
 
 En vez de mantener una lista fija de símbolos, cada ciclo el bot arma la watchlist en dos etapas:

@@ -40,6 +40,16 @@ def is_market_open(now=None):
     return BYMA_OPEN_TIME <= now.time() < BYMA_CLOSE_TIME
 
 
+def should_trade_now(config, now=None):
+    """Separado de is_market_open a propósito: el mercado ya está operando desde BYMA_OPEN_TIME
+    (10:30), pero esa primera media hora sincroniza contra la apertura de Wall Street y puede traer
+    precios más ruidosos -- config.trading_start_time (default 11:00, ver iol_bot/config.py) es un
+    umbral aparte para cuándo el bot empieza a evaluar señales/ejecutar órdenes, sin dejar de
+    considerar "abierto" al mercado en sí (dashboard, circuit breaker) desde su apertura real."""
+    now = now or datetime.now(BYMA_TZ)
+    return is_market_open(now) and now.time() >= config.trading_start_time
+
+
 def build_posiciones_por_simbolo(portafolio):
     posiciones = {}
     for activo in portafolio.get("activos", []):
@@ -192,7 +202,14 @@ def main():
             risk_manager.reset_daily()
             current_day = date.today()
 
-        if is_market_open():
+        if not is_market_open():
+            logger.info("Mercado cerrado, esperando...")
+        elif not should_trade_now(config):
+            logger.info(
+                "Mercado abierto pero todavía no llegó el horario de arranque configurado (%s) -- esperando",
+                config.trading_start_time,
+            )
+        else:
             try:
                 held_symbols = set()
                 try:
@@ -207,8 +224,6 @@ def main():
                 logger.error("Error de API en este ciclo, se lo salta y se reintenta en el próximo: %s", exc)
             except Exception:
                 logger.exception("Error inesperado en este ciclo, se lo salta y se reintenta en el próximo")
-        else:
-            logger.info("Mercado cerrado, esperando...")
 
         time.sleep(config.loop_interval_minutes * 60)
 
