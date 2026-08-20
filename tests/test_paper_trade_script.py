@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
@@ -201,3 +203,28 @@ def test_run_cycle_does_not_rotate_when_disabled(tmp_path, monkeypatch):
 
     assert "DEBIL" in portfolio.positions
     assert "CANDIDATO" not in portfolio.positions
+
+
+def test_run_cycle_does_not_rebuy_symbol_recently_rotated_out(tmp_path, monkeypatch):
+    # Caso real del 2026-08-14: un símbolo recién vendido por rotación podía recomprarse en el
+    # ciclo siguiente si su propia señal técnica seguía en BUY -- bucle sin ganancia real (IVV
+    # comprado/vendido 5 veces en 3hs contra AMGN, sin cooldown que lo frenara).
+    monkeypatch.setattr(
+        paper_trade_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100.0]}),
+    )
+
+    portfolio = PaperPortfolio(tmp_path / "paper.json", initial_cash=100_000)  # sin posiciones, mucho margen
+
+    limits = RiskLimits(
+        max_monto_por_orden_pct=100, max_exposicion_por_simbolo_pct=100, max_perdida_diaria_pct=100,
+        take_profit_pct=100, stop_loss_pct=100, rotacion_cooldown_minutos=60,
+    )
+    risk_manager = RiskManager(limits)
+    watchlist = [{"simbolo": "IVV", "mercado": "bCBA", "ultimo_precio": 100.0}]
+    cooldown_rotacion = {"IVV": datetime.now()}  # se acaba de vender por rotación
+
+    run_cycle(FakeClientCotizacion(), FakeStrategyBuy(), risk_manager, portfolio, watchlist, cooldown_rotacion=cooldown_rotacion)
+
+    assert "IVV" not in portfolio.positions  # el cooldown lo frenó, a pesar de tener margen de sobra

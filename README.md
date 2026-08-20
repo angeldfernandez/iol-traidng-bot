@@ -213,6 +213,12 @@ posición no está en pérdida (precio actual ≥ costo promedio) y el candidato
 `score_total` del ranking por al menos `MIN_MEJORA_SCORE_ROTACION` puntos (default 15, para evitar
 vaivén por diferencias chicas). Ver `iol_bot.risk.find_rotation_candidate`.
 
+**`ROTACION_COOLDOWN_MINUTOS`** (default 60): un símbolo recién vendido por rotación no puede
+recomprarse hasta que pase este tiempo. Agregado el 2026-08-20 tras detectar en los logs que IVV se
+compró y vendió 5 veces en 3 horas el 2026-08-14 (rotación IVV↔AMGN por scores muy parejos que
+oscilaban de ciclo a ciclo) — sin ganancia real, pero con costos de transacción reales en cuenta
+real. Ver `iol_bot.risk.apply_rotation_cooldown`.
+
 **Por qué está apagada por defecto**: depende del `score_total` del motor de ranking, que recién
 empezó a existir el 2026-08-12 — no hay forma de backtestear esta lógica retroactivamente (el
 motor de backtesting solo tiene precios históricos, no scores históricos). Antes de habilitarla,

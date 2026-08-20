@@ -120,6 +120,7 @@ class FakeLimits:
     stop_loss_pct = 5
     rotacion_habilitada = False
     min_mejora_score_rotacion = 15
+    rotacion_cooldown_minutos = 60
 
 
 class FakeRiskManager:
@@ -157,10 +158,11 @@ def test_intentar_rotacion_sells_weakest_qualifying_position_and_updates_state()
     }
     scores = {"CANDIDATO": 90.0, "DEBIL": 20.0, "OTRA": 85.0}  # OTRA no califica (diferencia de score < 15)
     executor = FakeExecutor(resultado_venta={"ok": True})
+    cooldown_rotacion = {}
 
     nueva_exposicion = _intentar_rotacion(
         executor, RiskManagerStub(), "CANDIDATO", posiciones, portfolio_value=100_000,
-        exposicion_total_actual=6000.0, scores_por_simbolo=scores,
+        exposicion_total_actual=6000.0, scores_por_simbolo=scores, cooldown_rotacion=cooldown_rotacion,
     )
 
     assert "DEBIL" not in posiciones  # se removió de la cartera local (se vendió)
@@ -170,6 +172,7 @@ def test_intentar_rotacion_sells_weakest_qualifying_position_and_updates_state()
     venta_signal = executor.handled[0][0]
     assert venta_signal.simbolo == "DEBIL"
     assert venta_signal.signal == Signal.SELL
+    assert "DEBIL" in cooldown_rotacion  # registrado para que apply_rotation_cooldown lo vea
 
 
 def test_intentar_rotacion_does_nothing_when_no_candidate_qualifies():
@@ -179,14 +182,16 @@ def test_intentar_rotacion_does_nothing_when_no_candidate_qualifies():
     posiciones = {"A": {"cantidad": 10, "valorizado": 1000.0, "ppc": 100.0}}
     scores = {"CANDIDATO": 40.0, "A": 35.0}  # diferencia de score insuficiente (< 15)
     executor = FakeExecutor()
+    cooldown_rotacion = {}
 
     nueva_exposicion = _intentar_rotacion(
         executor, RiskManagerStub(), "CANDIDATO", posiciones, portfolio_value=100_000,
-        exposicion_total_actual=1000.0, scores_por_simbolo=scores,
+        exposicion_total_actual=1000.0, scores_por_simbolo=scores, cooldown_rotacion=cooldown_rotacion,
     )
 
     assert nueva_exposicion == 1000.0  # sin cambios
     assert executor.handled == []
+    assert cooldown_rotacion == {}
     assert "A" in posiciones
 
 
@@ -275,3 +280,28 @@ def test_run_cycle_downgrades_buy_to_hold_when_holding_without_hitting_tp_sl(iso
     trade_signal, _, _, _ = executor.handled[0]
     assert trade_signal.signal == Signal.HOLD
     assert "ya en posición" in trade_signal.motivo
+
+
+def test_run_cycle_respects_rotation_cooldown_for_recently_rotated_symbol(isolated_signals_log, monkeypatch):
+    # Caso real del 2026-08-14: IVV vendido por rotación, pero su propia señal técnica sigue en
+    # BUY apenas se libera cash -- sin el cooldown, se recompra enseguida y queda otra vez como
+    # candidato débil a rotar (bucle sin ganancia real).
+    client = FakeClient()
+    client.portafolio = lambda: {"activos": []}  # IVV ya no está en cartera (se vendió por rotación)
+    strategy = FakeStrategy(signal=Signal.BUY)
+    risk_manager = FakeRiskManager()
+    executor = FakeExecutor()
+    watchlist = [{"simbolo": "IVV", "mercado": "bCBA"}]
+    cooldown_rotacion = {"IVV": datetime.now()}  # se acaba de vender por rotación
+
+    monkeypatch.setattr(
+        main_module,
+        "get_historical_prices_cached",
+        lambda client, simbolo, mercado=None, hoy_precio=None: pd.DataFrame({"cierre": [100]}),
+    )
+
+    run_cycle(client, strategy, executor, risk_manager, watchlist, cooldown_rotacion=cooldown_rotacion)
+
+    trade_signal, _, _, _ = executor.handled[0]
+    assert trade_signal.signal == Signal.HOLD
+    assert "cooldown" in trade_signal.motivo

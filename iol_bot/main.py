@@ -12,7 +12,7 @@ from iol_bot.executor import OrderExecutor
 from iol_bot.logging_config import setup_logging
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.ranking import build_daily_ranking, get_current_ranking
-from iol_bot.risk import RiskManager, apply_position_override, find_rotation_candidate
+from iol_bot.risk import RiskManager, apply_position_override, apply_rotation_cooldown, find_rotation_candidate
 from iol_bot.signals_log import estado_from_execution_result, log_signal
 from iol_bot.strategy import Signal, SmaCrossoverRsiStrategy, TradeSignal
 
@@ -89,7 +89,10 @@ def _scores_del_ranking_actual():
     return dict(zip(validos["simbolo"], validos["score_total"]))
 
 
-def _intentar_rotacion(executor, risk_manager, simbolo_candidato, posiciones, portfolio_value, exposicion_total_actual, scores_por_simbolo):
+def _intentar_rotacion(
+    executor, risk_manager, simbolo_candidato, posiciones, portfolio_value, exposicion_total_actual,
+    scores_por_simbolo, cooldown_rotacion,
+):
     """Si `simbolo_candidato` no consiguió margen para comprar, busca la posición más débil (peor
     score, sin pérdida) y la vende para liberarle lugar. Devuelve la nueva exposicion_total_actual
     (sin cambios si no se pudo/quiso rotar)."""
@@ -113,11 +116,17 @@ def _intentar_rotacion(executor, risk_manager, simbolo_candidato, posiciones, po
     if result and result.get("ok"):
         exposicion_total_actual -= pos_vender.get("valorizado", 0.0)
         del posiciones[simbolo_a_vender]
+        # Registrado para que apply_rotation_cooldown (iol_bot/risk.py) evite recomprarlo enseguida
+        # -- sin esto, si su propia señal técnica sigue en BUY apenas se libera cash, vuelve a
+        # entrar y queda otra vez como candidato a rotar, en bucle (ver caso real de IVV/AMGN en
+        # el comentario de RiskLimits.rotacion_cooldown_minutos, iol_bot/config.py).
+        cooldown_rotacion[simbolo_a_vender] = datetime.now()
 
     return exposicion_total_actual
 
 
-def run_cycle(client, strategy, executor, risk_manager, watchlist):
+def run_cycle(client, strategy, executor, risk_manager, watchlist, cooldown_rotacion=None):
+    cooldown_rotacion = {} if cooldown_rotacion is None else cooldown_rotacion
     try:
         estado_cuenta = client.estado_cuenta()
         portafolio = client.portafolio()
@@ -147,6 +156,9 @@ def run_cycle(client, strategy, executor, risk_manager, watchlist):
             trade_signal = apply_position_override(
                 trade_signal, posicion_actual["cantidad"], posicion_actual.get("ppc"), risk_manager.limits
             )
+            trade_signal = apply_rotation_cooldown(
+                trade_signal, cooldown_rotacion, risk_manager.limits.rotacion_cooldown_minutos
+            )
 
             if trade_signal.signal == Signal.BUY and scores_por_simbolo:
                 cantidad_posible, _motivo = risk_manager.size_buy_order(
@@ -154,7 +166,8 @@ def run_cycle(client, strategy, executor, risk_manager, watchlist):
                 )
                 if cantidad_posible <= 0:
                     exposicion_total_actual = _intentar_rotacion(
-                        executor, risk_manager, simbolo, posiciones, portfolio_value, exposicion_total_actual, scores_por_simbolo
+                        executor, risk_manager, simbolo, posiciones, portfolio_value, exposicion_total_actual,
+                        scores_por_simbolo, cooldown_rotacion,
                     )
 
             result = executor.handle_signal(trade_signal, portfolio_value, posicion_actual, exposicion_total_actual)
@@ -194,6 +207,9 @@ def main():
     strategy = SmaCrossoverRsiStrategy()
     risk_manager = RiskManager(config.risk, state_path=RISK_STATE_PATH)
     executor = OrderExecutor(client, risk_manager, dry_run=config.effective_dry_run)
+    # Vive mientras dure el proceso (no se persiste a disco): un reinicio ya implica un "reset"
+    # natural del cooldown, y no vale la pena la complejidad de un estado nuevo en logs/ para eso.
+    cooldown_rotacion = {}
 
     current_day = date.today()
 
@@ -219,7 +235,7 @@ def main():
                 # Se recalcula el ranking cada ciclo (motor de scoring de iol_bot/ranking.py) para
                 # que refleje el volumen/precio operado hasta ese momento del día, no una foto vieja.
                 watchlist = build_daily_ranking(client, config, held_symbols=held_symbols)
-                run_cycle(client, strategy, executor, risk_manager, watchlist)
+                run_cycle(client, strategy, executor, risk_manager, watchlist, cooldown_rotacion=cooldown_rotacion)
             except IOLApiError as exc:
                 logger.error("Error de API en este ciclo, se lo salta y se reintenta en el próximo: %s", exc)
             except Exception:

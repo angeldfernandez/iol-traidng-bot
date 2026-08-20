@@ -23,7 +23,7 @@ from iol_bot.main import _scores_del_ranking_actual, is_market_open, should_trad
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.paper_portfolio import PaperPortfolio
 from iol_bot.ranking import build_daily_ranking, get_current_ranking
-from iol_bot.risk import RiskManager, apply_position_override, find_rotation_candidate
+from iol_bot.risk import RiskManager, apply_position_override, apply_rotation_cooldown, find_rotation_candidate
 from iol_bot.strategy import Signal, SmaCrossoverRsiStrategy
 
 logger = logging.getLogger("iol_bot.paper_trade")
@@ -88,7 +88,7 @@ def _log_paper_equity(status):
     )
 
 
-def _intentar_rotacion(risk_manager, portfolio, simbolo_candidato, precios_actuales, scores_por_simbolo):
+def _intentar_rotacion(risk_manager, portfolio, simbolo_candidato, precios_actuales, scores_por_simbolo, cooldown_rotacion):
     """Análogo a iol_bot.main._intentar_rotacion, pero para la cartera virtual (PaperPortfolio).
     Devuelve True si vendió algo (el llamador debe recalcular portfolio_value/exposición antes de
     reintentar el size_buy_order del candidato)."""
@@ -113,10 +113,14 @@ def _intentar_rotacion(risk_manager, portfolio, simbolo_candidato, precios_actua
             "[PAPER] VENTA (rotación) %s x%s @ %.2f para liberar lugar a %s",
             simbolo_a_vender, cantidad_venta, precio_venta, simbolo_candidato,
         )
+        # Ver el comentario de RiskLimits.rotacion_cooldown_minutos (iol_bot/config.py) -- evita
+        # recomprarlo enseguida si su propia señal técnica sigue en BUY apenas se libera cash.
+        cooldown_rotacion[simbolo_a_vender] = datetime.now()
     return ok
 
 
-def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
+def run_cycle(client, strategy, risk_manager, portfolio, watchlist, cooldown_rotacion=None):
+    cooldown_rotacion = {} if cooldown_rotacion is None else cooldown_rotacion
     precios_actuales = {}
 
     # Marcar a mercado TODAS las posiciones abiertas antes de medir la cartera del ciclo — no solo
@@ -154,6 +158,9 @@ def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
             trade_signal = apply_position_override(
                 trade_signal, posicion["cantidad"], posicion.get("costo_promedio"), risk_manager.limits
             )
+            trade_signal = apply_rotation_cooldown(
+                trade_signal, cooldown_rotacion, risk_manager.limits.rotacion_cooldown_minutos
+            )
             exposicion_actual = portfolio.exposicion(simbolo, precio_actual)
             exposicion_total_actual = portfolio_value - portfolio.cash
 
@@ -164,7 +171,7 @@ def run_cycle(client, strategy, risk_manager, portfolio, watchlist):
                 )
 
                 if cantidad <= 0 and scores_por_simbolo:
-                    if _intentar_rotacion(risk_manager, portfolio, simbolo, precios_actuales, scores_por_simbolo):
+                    if _intentar_rotacion(risk_manager, portfolio, simbolo, precios_actuales, scores_por_simbolo, cooldown_rotacion):
                         portfolio_value = portfolio.valorizado_total(precios_actuales)
                         exposicion_total_actual = portfolio_value - portfolio.cash
                         cantidad, motivo = risk_manager.size_buy_order(
@@ -233,6 +240,9 @@ def main():
     strategy = SmaCrossoverRsiStrategy()
     risk_manager = RiskManager(config.risk, state_path=PAPER_RISK_STATE_PATH)
     portfolio = PaperPortfolio(PAPER_PORTFOLIO_PATH, initial_cash=config.paper_initial_cash)
+    # Vive mientras dure el proceso (no se persiste a disco): un reinicio ya implica un "reset"
+    # natural del cooldown, y no vale la pena la complejidad de un estado nuevo en logs/ para eso.
+    cooldown_rotacion = {}
 
     logger.info(
         "Paper trading iniciado | cash=$%.2f paneles=%s max_simbolos=%s intervalo=%smin",
@@ -259,7 +269,7 @@ def main():
 
         try:
             watchlist = build_daily_ranking(client, config, held_symbols=set(portfolio.positions))
-            status = run_cycle(client, strategy, risk_manager, portfolio, watchlist)
+            status = run_cycle(client, strategy, risk_manager, portfolio, watchlist, cooldown_rotacion=cooldown_rotacion)
             logger.info(
                 "Ciclo completo | cash=$%.2f valorizado=$%.2f pnl=$%.2f (%.2f%%) posiciones=%s",
                 portfolio.cash, status["valorizado_total"], status["pnl_total"], status["pnl_total_pct"],

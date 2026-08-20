@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 logger = logging.getLogger("iol_bot.risk")
 
@@ -87,6 +87,33 @@ def apply_position_override(trade_signal, cantidad_en_cartera, costo_promedio, l
         )
 
     return trade_signal
+
+
+def apply_rotation_cooldown(trade_signal, cooldown_state, cooldown_minutos, ahora=None):
+    """Si `trade_signal.simbolo` fue vendido por rotación hace menos de `cooldown_minutos`, baja
+    una señal BUY a HOLD. Sin esto, un símbolo recién juzgado "el más débil" de la cartera puede
+    volver a comprarse apenas se libera cash, si su propia señal técnica sigue en BUY -- y quedar
+    otra vez como candidato a rotar en el próximo ciclo, en bucle, sin ganancia real (caso real:
+    IVV comprado/vendido 5 veces en 3hs el 2026-08-14, ~$1 de P&L total). No toca señales SELL/HOLD
+    ni afecta a un símbolo que nunca pasó por `cooldown_state`."""
+    from iol_bot.strategy import Signal, TradeSignal
+
+    if trade_signal.signal != Signal.BUY:
+        return trade_signal
+
+    vendido_en = cooldown_state.get(trade_signal.simbolo)
+    if vendido_en is None:
+        return trade_signal
+
+    ahora = ahora or datetime.now()
+    if ahora - vendido_en >= timedelta(minutes=cooldown_minutos):
+        return trade_signal
+
+    minutos_restantes = cooldown_minutos - (ahora - vendido_en).total_seconds() / 60
+    return TradeSignal(
+        trade_signal.simbolo, Signal.HOLD, trade_signal.precio,
+        f"en cooldown de rotación (vendido recientemente, faltan {minutos_restantes:.0f} min)",
+    )
 
 
 def find_rotation_candidate(posiciones_abiertas, candidato_simbolo, precios_actuales, scores_por_simbolo, min_mejora_score):

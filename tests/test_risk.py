@@ -1,7 +1,10 @@
+from datetime import datetime
+
 from iol_bot.config import RiskLimits
 from iol_bot.risk import (
     RiskManager,
     apply_position_override,
+    apply_rotation_cooldown,
     calc_buy_quantity,
     check_daily_circuit_breaker,
     check_position_exit,
@@ -164,6 +167,58 @@ def test_find_rotation_candidate_works_with_ppc_key_como_en_la_cuenta_real():
     resultado = find_rotation_candidate(posiciones, "CANDIDATO", precios, scores, min_mejora_score=15)
 
     assert resultado == "A"
+
+
+def test_apply_rotation_cooldown_downgrades_buy_within_window():
+    # Caso real: IVV vendido por rotación a las 13:05, su propia señal sigue en BUY a las 13:20
+    # (15 min después) -- con un cooldown de 60 min, debería bajar a HOLD.
+    ahora = datetime(2026, 8, 14, 13, 20)
+    cooldown_state = {"IVV": datetime(2026, 8, 14, 13, 5)}
+    señal = TradeSignal("IVV", Signal.BUY, precio=1786.0, motivo="SMA20>SMA50")
+
+    resultado = apply_rotation_cooldown(señal, cooldown_state, cooldown_minutos=60, ahora=ahora)
+
+    assert resultado.signal == Signal.HOLD
+    assert "cooldown" in resultado.motivo
+
+
+def test_apply_rotation_cooldown_allows_buy_after_window_expires():
+    ahora = datetime(2026, 8, 14, 14, 10)  # 65 min después de la venta
+    cooldown_state = {"IVV": datetime(2026, 8, 14, 13, 5)}
+    señal = TradeSignal("IVV", Signal.BUY, precio=1786.0, motivo="SMA20>SMA50")
+
+    resultado = apply_rotation_cooldown(señal, cooldown_state, cooldown_minutos=60, ahora=ahora)
+
+    assert resultado is señal  # sin cambios
+
+
+def test_apply_rotation_cooldown_ignores_symbol_never_rotated():
+    señal = TradeSignal("NUEVO", Signal.BUY, precio=100.0, motivo="SMA20>SMA50")
+
+    resultado = apply_rotation_cooldown(señal, cooldown_state={}, cooldown_minutos=60)
+
+    assert resultado is señal
+
+
+def test_apply_rotation_cooldown_does_not_affect_sell_or_hold_signals():
+    ahora = datetime(2026, 8, 14, 13, 20)
+    cooldown_state = {"IVV": datetime(2026, 8, 14, 13, 5)}
+
+    señal_sell = TradeSignal("IVV", Signal.SELL, precio=1786.0, motivo="RSI sobrecomprado")
+    señal_hold = TradeSignal("IVV", Signal.HOLD, precio=1786.0, motivo="sin cambios")
+
+    assert apply_rotation_cooldown(señal_sell, cooldown_state, 60, ahora=ahora) is señal_sell
+    assert apply_rotation_cooldown(señal_hold, cooldown_state, 60, ahora=ahora) is señal_hold
+
+
+def test_apply_rotation_cooldown_exact_boundary_is_allowed():
+    ahora = datetime(2026, 8, 14, 14, 5)  # exactamente 60 min después
+    cooldown_state = {"IVV": datetime(2026, 8, 14, 13, 5)}
+    señal = TradeSignal("IVV", Signal.BUY, precio=1786.0, motivo="SMA20>SMA50")
+
+    resultado = apply_rotation_cooldown(señal, cooldown_state, cooldown_minutos=60, ahora=ahora)
+
+    assert resultado is señal
 
 
 def test_check_daily_circuit_breaker_triggers_above_threshold():

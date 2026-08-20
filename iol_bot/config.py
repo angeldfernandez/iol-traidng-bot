@@ -62,6 +62,12 @@ class RiskLimits:
     # implementó) — arrancar con esto en false hasta validarlo en vivo/paper trading un tiempo.
     rotacion_habilitada: bool = False
     min_mejora_score_rotacion: float = 15.0
+    # Un símbolo recién vendido por rotación no puede volver a comprarse hasta que pase este
+    # tiempo -- sin esto, el score de dos candidatos parejos puede oscilar de ciclo a ciclo
+    # (recalculado en percentiles cada vez) y generar compra/venta del mismo símbolo en bucle sin
+    # ganancia real (caso real: IVV comprado/vendido 5 veces en 3hs el 2026-08-14 por una
+    # oscilación IVV<->AMGN, ~$1 de P&L total pero costos de transacción reales en cuenta real).
+    rotacion_cooldown_minutos: float = 60.0
 
 
 @dataclass
@@ -113,6 +119,7 @@ class Config:
             max_exposicion_total_pct=_env_float("MAX_EXPOSICION_TOTAL_PCT", 80),
             rotacion_habilitada=_env_bool("ROTACION_HABILITADA", False),
             min_mejora_score_rotacion=_env_float("MIN_MEJORA_SCORE_ROTACION", 15),
+            rotacion_cooldown_minutos=_env_float("ROTACION_COOLDOWN_MINUTOS", 60),
         )
 
         base_url = os.getenv("IOL_BASE_URL_OVERRIDE", "").strip() or DEFAULT_BASE_URL
