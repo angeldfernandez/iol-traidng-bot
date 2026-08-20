@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 # Slots categóricos 1-6 en el orden validado del skill de dataviz (pasan el chequeo de pares
 # adyacentes para stacks/barras) — usados por composicion_cartera, que asigna un slot a cada
 # símbolo por orden de tamaño (no por identidad fija: la cartera cambia de contenido día a día, así
@@ -34,6 +36,48 @@ def composicion_cartera(cash, positions, precios_cache, max_simbolos=len(COMPOSI
 
     segmentos.sort(key=lambda s: s["valor"], reverse=True)
     return segmentos
+
+
+def ganancia_diaria_para_mostrar(paper_risk_status, hoy=None):
+    """Interpreta logs/paper_risk_state.json (RiskManager, ver iol_bot/risk.py) para la métrica
+    "Ganancia/pérdida HOY" del dashboard. Nunca calcula el % contra un baseline en falso -- hay
+    tres estados donde NO hay ganancia real de hoy para mostrar, y hay que distinguirlos:
+
+    - "otro_dia": el último dato guardado es de un día anterior (antes del primer ciclo de hoy, o
+      el proceso se cayó ayer y no volvió a correr).
+    - "esperando_primer_ciclo": RiskManager ya se autocorrigió hoy (reset_daily al arrancar el
+      proceso) pero todavía no corrió ningún ciclo real que fije la línea base -- baseline_value
+      queda en None y daily_pnl en 0.0 en ese momento, que NO es "hoy vamos empatados" sino
+      "todavía no hay dato de hoy" (ej. el proceso arrancó pero TRADING_START_TIME, ver
+      iol_bot/config.py, todavía no llegó).
+    - "sin_datos": no hay ningún estado persistido todavía (nunca corrió paper trading).
+
+    Devuelve {"estado": ..., "ganancia": float|None, "ganancia_pct": float|None}."""
+    hoy = hoy or date.today()
+
+    if not paper_risk_status:
+        return {"estado": "sin_datos", "ganancia": None, "ganancia_pct": None}
+
+    actualizado_en = paper_risk_status.get("updated_at")
+    es_de_hoy = False
+    if actualizado_en:
+        try:
+            es_de_hoy = datetime.fromisoformat(actualizado_en).date() == hoy
+        except ValueError:
+            es_de_hoy = False
+
+    if not es_de_hoy:
+        return {"estado": "otro_dia", "ganancia": None, "ganancia_pct": None}
+
+    baseline_dia = paper_risk_status.get("baseline_value")
+    if not baseline_dia:
+        return {"estado": "esperando_primer_ciclo", "ganancia": None, "ganancia_pct": None}
+
+    ganancia = paper_risk_status.get("daily_pnl")
+    if ganancia is None:
+        return {"estado": "esperando_primer_ciclo", "ganancia": None, "ganancia_pct": None}
+
+    return {"estado": "ok", "ganancia": ganancia, "ganancia_pct": ganancia / baseline_dia * 100}
 
 
 def daily_pnl_pesos(valorizado, variacion_diaria_pct):

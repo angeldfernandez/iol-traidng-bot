@@ -23,7 +23,7 @@ from iol_bot.main import EQUITY_LOG, RISK_STATE_PATH
 from iol_bot.market_data import get_historical_prices_cached
 from iol_bot.market_scanner import scan_market
 from iol_bot.paper_portfolio import load_status as load_paper_status
-from iol_bot.pnl import composicion_cartera, daily_pnl_pesos
+from iol_bot.pnl import composicion_cartera, daily_pnl_pesos, ganancia_diaria_para_mostrar
 from iol_bot.price_cache import load_cache
 from iol_bot.ranking import build_daily_ranking, diff_rankings, get_current_ranking, get_previous_ranking
 from iol_bot.risk import load_status
@@ -340,23 +340,9 @@ with tab_paper:
         # se cayó — ver logs/paper_trade_run.log), NO es el P&L de hoy todavía: mostrarlo como tal
         # sería engañoso, así que se marca aparte en vez de mezclarlo con datos frescos.
         paper_risk_status = load_status(PAPER_RISK_STATE_PATH)
-        ganancia_diaria, ganancia_diaria_pct, dato_diario_de_otro_dia = None, None, False
-        if paper_risk_status:
-            actualizado_en = paper_risk_status.get("updated_at")
-            es_de_hoy = False
-            if actualizado_en:
-                try:
-                    es_de_hoy = datetime.fromisoformat(actualizado_en).date() == date.today()
-                except ValueError:
-                    es_de_hoy = False
-
-            if es_de_hoy:
-                ganancia_diaria = paper_risk_status.get("daily_pnl")
-                baseline_dia = paper_risk_status.get("baseline_value") or 0
-                if ganancia_diaria is not None and baseline_dia:
-                    ganancia_diaria_pct = ganancia_diaria / baseline_dia * 100
-            else:
-                dato_diario_de_otro_dia = True
+        resultado_diario = ganancia_diaria_para_mostrar(paper_risk_status)
+        ganancia_diaria = resultado_diario["ganancia"]
+        ganancia_diaria_pct = resultado_diario["ganancia_pct"]
 
         st.write("**Composición de la cartera**")
         col1, col2, col3 = st.columns(3)
@@ -367,11 +353,14 @@ with tab_paper:
         st.write("**Resultado**")
         col4, col5, col6 = st.columns(3)
         col4.metric("Valor total de la cartera", f"${valorizado:,.2f}")
-        if ganancia_diaria is not None:
+        if resultado_diario["estado"] == "ok":
             col5.metric("Ganancia/pérdida HOY", f"${ganancia_diaria:,.2f}", delta=f"{ganancia_diaria_pct:.2f}%")
-        elif dato_diario_de_otro_dia:
+        elif resultado_diario["estado"] == "otro_dia":
             col5.metric("Ganancia/pérdida HOY", "N/D")
             st.caption("⚠️ Todavía no corrió ningún ciclo hoy — el último dato guardado es de un día anterior.")
+        elif resultado_diario["estado"] == "esperando_primer_ciclo":
+            col5.metric("Ganancia/pérdida HOY", "N/D")
+            st.caption("⏳ Todavía no corrió el primer ciclo de hoy — esperando el horario de arranque configurado.")
         else:
             col5.metric("Ganancia/pérdida HOY", "N/D")
         col6.metric("Ganancia/pérdida total", f"${pnl_total:,.2f}", delta=f"{pnl_total_pct:.2f}%")

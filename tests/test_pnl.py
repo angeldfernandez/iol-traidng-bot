@@ -1,4 +1,8 @@
-from iol_bot.pnl import COMPOSICION_SLOTS, composicion_cartera, daily_pnl_pesos
+from datetime import date, datetime
+
+from iol_bot.pnl import COMPOSICION_SLOTS, composicion_cartera, daily_pnl_pesos, ganancia_diaria_para_mostrar
+
+HOY = date(2026, 8, 18)
 
 
 def test_daily_pnl_pesos_positive_variation():
@@ -77,3 +81,47 @@ def test_composicion_cartera_agrupa_en_otros_mas_alla_del_septimo_simbolo():
     # Los 6 símbolos más grandes conservan su propio segmento
     for i in range(6):
         assert f"SIM{i}" in nombres
+
+
+def test_ganancia_diaria_sin_estado_persistido():
+    resultado = ganancia_diaria_para_mostrar(None, hoy=HOY)
+    assert resultado == {"estado": "sin_datos", "ganancia": None, "ganancia_pct": None}
+
+
+def test_ganancia_diaria_de_un_dia_anterior():
+    estado = {"baseline_value": 1_000_000.0, "daily_pnl": 500.0, "updated_at": "2026-08-14T16:57:45"}
+    resultado = ganancia_diaria_para_mostrar(estado, hoy=HOY)
+    assert resultado["estado"] == "otro_dia"
+    assert resultado["ganancia"] is None
+    assert resultado["ganancia_pct"] is None
+
+
+def test_ganancia_diaria_esperando_primer_ciclo_sin_romper_por_baseline_none():
+    # Caso real del 2026-08-18: RiskManager se autocorrigió hoy (reset_daily) pero todavía no
+    # corrió ningún ciclo real -- baseline_value=None, daily_pnl=0.0. Antes de este fix, el
+    # dashboard intentaba formatear un ganancia_pct=None y tiraba TypeError.
+    estado = {
+        "baseline_value": None,
+        "daily_pnl": 0.0,
+        "updated_at": datetime(2026, 8, 18, 10, 31).isoformat(),
+    }
+    resultado = ganancia_diaria_para_mostrar(estado, hoy=HOY)
+    assert resultado == {"estado": "esperando_primer_ciclo", "ganancia": None, "ganancia_pct": None}
+
+
+def test_ganancia_diaria_ok_con_baseline_y_pnl_de_hoy():
+    estado = {
+        "baseline_value": 1_000_000.0,
+        "daily_pnl": -5_000.0,
+        "updated_at": datetime(2026, 8, 18, 13, 0).isoformat(),
+    }
+    resultado = ganancia_diaria_para_mostrar(estado, hoy=HOY)
+    assert resultado["estado"] == "ok"
+    assert resultado["ganancia"] == -5_000.0
+    assert resultado["ganancia_pct"] == -0.5
+
+
+def test_ganancia_diaria_updated_at_malformado_se_trata_como_otro_dia():
+    estado = {"baseline_value": 1_000_000.0, "daily_pnl": 100.0, "updated_at": "no-es-una-fecha"}
+    resultado = ganancia_diaria_para_mostrar(estado, hoy=HOY)
+    assert resultado["estado"] == "otro_dia"
